@@ -211,10 +211,6 @@ def evolve_islands(cfg: EvolutionConfig):
     return ea
 
 
-def migrate(islands: list[Population], cfg: EvolutionConfig) -> None:
-    raise NotImplementedError
-
-
 def fitness_stats(population: Population) -> dict:
     raise NotImplementedError
 
