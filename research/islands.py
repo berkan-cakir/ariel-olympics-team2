@@ -28,12 +28,11 @@ class IslandEA(EA):
         self.island_kwargs = island_kwargs
 
         if population is not None:
-
             if len(population) != sum(island_sizes):
                 raise ValueError(f"Population size ({len(population)}) must match total island size({sum(island_sizes)})")
 
             # Assign the appropriate number of individuals to each island
-            for island, individual in zip(chain(repeat(i, size) for i, size in enumerate(island_sizes)), population):
+            for island, individual in zip(chain(*(repeat(i, size) for i, size in enumerate(island_sizes))), population):
                 individual.tags['island'] = island
 
         super().__init__(population=population, **kwargs)
@@ -46,7 +45,7 @@ class IslandEA(EA):
     def island_pops(self) -> list[Population]:
         self.fetch_population()
 
-        island_pops = [Population() for _ in self.island_sizes]
+        island_pops = [Population([]) for _ in self.island_sizes]
         for individual in self.population:
             island_pops[individual.tags['island']].append(individual)
 
@@ -54,7 +53,7 @@ class IslandEA(EA):
 
     def migrate(self) -> None:
         island_pops = self.island_pops()
-        island_emigrants = [island.best(self.migration_count) for island in island_pops]
+        island_emigrants = [island.best(n=self.migration_count) for island in island_pops]
 
         # Simply cycle the best n individuals one island to the right, looping around
         for emigrant in chain(*island_emigrants):
@@ -64,15 +63,18 @@ class IslandEA(EA):
         self.current_generation += 1
 
         island_pops = self.island_pops()
-        new_population = Population()
+        new_population = []
 
-        for island_pop, kwargs in zip(island_pops, self.island_kwargs):
+        for island, (island_pop, kwargs) in enumerate(zip(island_pops, self.island_kwargs)):
             for op in self.operations:
                 island_pop = op(island_pop, **kwargs)
 
+            for individual in island_pop:
+                individual.tags['island'] = island
+
             new_population.extend(island_pop)
 
-        self.population = new_population
+        self.population = Population(new_population)
 
         self._commit()
 
