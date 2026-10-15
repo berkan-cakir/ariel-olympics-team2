@@ -23,11 +23,10 @@ The score is the robot's average speed (m/s) over the race: GOAL / the time it t
 away, otherwise the furthest it got / the time it had. Higher is better.
 """
 
-import importlib.util
 import json
+import runpy
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 
 import mujoco as mj
@@ -108,6 +107,8 @@ class FitnessConfig:
 
     def __post_init__(self) -> None:
         # Check the settings right away, so that a typo fails before a long run starts
+        if not self.environments:
+            raise ValueError("Choose at least one environment.")
         unknown = set(self.environments) - set(WORLDS)
         if unknown:
             raise ValueError(f"Unknown environments {sorted(unknown)}, choose from {sorted(WORLDS)}.")
@@ -144,11 +145,8 @@ def load_body(source: str) -> CoreModule:
 
 def load_python_body(path: Path) -> CoreModule:
     """Run a Python file and return the body that its ``custom_robot()`` function builds."""
-    # This is what `import` does, but for a file anywhere on disk
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.custom_robot()
+    defined = runpy.run_path(str(path))  # runs the file and returns everything it defined, by name
+    return defined["custom_robot"]()
 
 
 def load_json_body(path: Path) -> CoreModule:
@@ -171,7 +169,6 @@ def load_json_body(path: Path) -> CoreModule:
 # --- Worlds ---
 
 
-@cache  # remember the result: the same scale always gives the same noise
 def seeded_noise(scale: int) -> np.ndarray:
     """
     Random bumps (Perlin noise) for a terrain, the same every time.
@@ -240,7 +237,6 @@ def body_radius(body: CoreModule) -> float:
     return float(np.max(part_centres + part_sizes))
 
 
-@cache  # remember the result: the ground never changes
 def highest_ground(env_id: int, radius: float) -> float:
     """
     Height (m) of the highest ground within ``radius`` metres of the spawn point (0, 0) in world ``env_id``.
@@ -336,16 +332,11 @@ def race_speed(path: np.ndarray) -> float:
     distance = xy_displacement((xs[0], ys[0]), (xs, ys))
     race_time = (len(path) - 1) * TIMESTEP
 
-    finished = np.flatnonzero(distance >= GOAL)  # the steps at which the robot was past the finish
-    if len(finished) == 0:
+    steps_past_finish = np.flatnonzero(distance >= GOAL)  # the steps at which the robot was past the finish
+    if len(steps_past_finish) == 0:
         return float(distance.max() / race_time)
 
-    # Between step `first - 1` (short of the finish) and step `first` (past it) the robot crossed the line.
-    # Work out when exactly, assuming that it moved at a steady speed during that one step.
-    first = finished[0]
-    before, after = distance[first - 1], distance[first]
-    fraction = (GOAL - before) / (after - before)
-    finish_time = (first - 1 + fraction) * TIMESTEP
+    finish_time = steps_past_finish[0] * TIMESTEP  # the first moment it was past the finish
     return float(GOAL / finish_time)
 
 
