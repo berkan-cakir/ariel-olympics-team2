@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import optuna
-from ariel.ec import Archive
+from ariel.ec import Archive, Population
 from matplotlib.ticker import MaxNLocator
 from rich.console import Console
 
@@ -164,10 +164,14 @@ def run_seeds(args: argparse.Namespace, body: str, params: dict) -> None:
         run_one(make_config(args, body, params, seed, body_folder(args, body) / "best" / f"seed_{seed}"))
 
 
+def survivors(archive: Archive, gen: int) -> Population:
+    return archive.by_generation(gen).where(lambda ind: ind.alive or ind.time_of_death > gen)
+
+
 def generation_stats(db: Path) -> tuple[list[dict[str, float]], list[float]]:
     archive = Archive(db)
     first, last = archive.generation_range
-    populations = [archive.by_generation(gen) for gen in range(first, last + 1)]
+    populations = [survivors(archive, gen) for gen in range(first, last + 1)]
     return [fitness_stats(pop) for pop in populations], [diversity(pop) for pop in populations]
 
 
