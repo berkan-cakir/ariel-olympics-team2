@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import optuna
-from ariel.ec import Archive
+from ariel.ec import Archive, Population
 from matplotlib.ticker import MaxNLocator
 from rich.console import Console
 
@@ -61,6 +61,8 @@ def parse_args() -> argparse.Namespace:
     g.add_argument("--weights", type=float, nargs="+", default=None)
     g.add_argument("--islands", action="store_true")
     g.add_argument("--generations", type=int, default=50)
+    g.add_argument("--evaluations", type=int, default=None,
+                   help="evaluation budget per run, initial population included; overrides --generations")
     g.add_argument("--workers", type=int, default=os.cpu_count())
     g.add_argument("--out-dir", type=Path, default=HERE / "runs")
 
@@ -120,6 +122,14 @@ def suggest_params(trial: optuna.Trial, args: argparse.Namespace) -> dict:
     return params
 
 
+def generations(args: argparse.Namespace, params: dict) -> int:
+    if args.evaluations is None:
+        return args.generations
+    pop = params["pop_size"]
+    offspring = pop // 3 * 3 if params["algorithm"] == "revde" else pop // 2 * 2
+    return max(1, (args.evaluations - pop) // offspring)
+
+
 def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, folder: Path) -> EvolutionConfig:
     mlp = {}
     if params["controller"] in MLP_CONTROLLERS:
@@ -129,7 +139,7 @@ def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, fo
         body=body,
         controller=BrainConfig(name=params["controller"], **mlp),
         algorithm=params["algorithm"],
-        num_steps=args.generations,
+        num_steps=generations(args, params),
         target_population_size=params["pop_size"],
         islands=args.islands,
         seed=seed,
@@ -164,11 +174,16 @@ def run_seeds(args: argparse.Namespace, body: str, params: dict) -> None:
         run_one(make_config(args, body, params, seed, body_folder(args, body) / "best" / f"seed_{seed}"))
 
 
-def generation_stats(db: Path) -> tuple[list[dict[str, float]], list[float]]:
+def survivors(archive: Archive, gen: int) -> Population:
+    return archive.by_generation(gen).where(lambda ind: ind.alive or ind.time_of_death > gen)
+
+
+def generation_stats(db: Path) -> dict[str, list[float]]:
     archive = Archive(db)
     first, last = archive.generation_range
-    populations = [archive.by_generation(gen) for gen in range(first, last + 1)]
-    return [fitness_stats(pop) for pop in populations], [diversity(pop) for pop in populations]
+    populations = [survivors(archive, gen) for gen in range(first, last + 1)]
+    fitness = [fitness_stats(pop) for pop in populations]
+    return {key: [f[key] for f in fitness] for key in fitness[0]} | {"diversity": [diversity(pop) for pop in populations]}
 
 
 def plot_generations(series: dict[str, np.ndarray], ylabel: str, title: str, path: Path) -> None:
@@ -203,12 +218,13 @@ def plot_study(study: optuna.Study, path: Path) -> None:
 
 def make_plots(out_dir: Path) -> None:
     best = json.loads((out_dir / "best_params.json").read_text())
-    stats, diversities = zip(*(generation_stats(db) for db in sorted((out_dir / best["runs"]).glob("seed_*/database.db"))))
-    n_gens = min(len(s) for s in stats)
-    fitness = {key: np.array([[gen[key] for gen in s[:n_gens]] for s in stats]) for key in ("best", "mean")}
-    note = f"mean over {len(stats)} seeds, band = min to max"
-    plot_generations(fitness, "fitness", f"Fitness per generation: {out_dir.name}\n{note}", out_dir / "fitness.png")
-    plot_generations({"diversity": np.array([d[:n_gens] for d in diversities])}, "diversity",
+    runs = [generation_stats(db) for db in sorted((out_dir / best["runs"]).glob("seed_*/database.db"))]
+    n_gens = min(len(run["best"]) for run in runs)
+    series = {key: np.array([run[key][:n_gens] for run in runs]) for key in runs[0]}
+    note = f"mean over {len(runs)} seeds, band = min to max"
+    plot_generations({key: series[key] for key in ("best", "mean")}, "fitness",
+                     f"Fitness per generation: {out_dir.name}\n{note}", out_dir / "fitness.png")
+    plot_generations({"diversity": series["diversity"]}, "diversity",
                      f"Diversity per generation: {out_dir.name}\n{note}", out_dir / "diversity.png")
     plot_study(optuna.load_study(study_name=out_dir.name, storage=f"sqlite:///{out_dir / 'optuna.db'}"),
                out_dir / "optuna.png")

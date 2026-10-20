@@ -5,8 +5,6 @@ from multiprocessing import get_context
 from multiprocessing.pool import Pool
 from typing import Literal
 
-from sqlmodel import Session, select
-
 import ariel
 import numpy as np
 import torch
@@ -213,74 +211,10 @@ def evolve_islands(cfg: EvolutionConfig):
     return ea
 
 
-def fitness_stats(ea: EA) -> dict[str, float | np.typing.NDArray[np.float64]]:
-    """Calculate fitness stats for an evolution run.
-
-    Parameters
-    ----------
-    ea : EA
-        An ``EA`` object that has finished running. This function will query
-        its database to fetch the run's history
-
-    Returns
-    -------
-    dict[str, float | list[float]]
-        A dictionary containing several fitness stats:
-        - best_overall : float
-        - mean : list[float]
-        - std_dev : list[float]
-        - best : list[float]
-    """
-    data = [[] for _ in range(ea.num_steps + 1)]
-
-    with Session(ea.engine) as session:
-        # fitness, birth, death = map(np.array, zip(*session.exec(select(Individual.fitness_, Individual.time_of_birth, Individual.time_of_death)).all()))
-
-        # print(fitness)
-
-        for fitness, birth, death in session.exec(select(Individual.fitness_, Individual.time_of_birth, Individual.time_of_death)):
-            # time of death is inclusive
-            for generation in range(birth, death + 1):
-                data[generation].append(fitness)
-
-        # print([len(bucket) for bucket in data])
-
-        # This only works if the total population size stays constant
-        data = np.array(data)
-
-    return {
-        "best_overall": data.max(),
-        "mean": data.mean(axis=1),
-        "std_dev": data.std(axis=1),
-        "best": data.max(axis=1),
-    }
+def fitness_stats(population: Population) -> dict[str, float]:
+    f = np.array([ind.fitness for ind in population])
+    return {"best": float(f.max()), "mean": float(f.mean()), "std": float(f.std())}
 
 
-def diversity(ea: EA, vector_conversion: Callable[..., list[float]] = lambda x: x) -> np.typing.NDArray[np.float64]:
-    """Calculate diversity for an evolution run.
-
-    Parameters
-    ----------
-    ea : EA
-        An ``EA`` object that has finished running. This function will query
-        its database to fetch the run's history
-
-    vector_conversion : callable, default identitiy
-        The diversity calculation assumes that each genotype is a vector.
-        If this is not the case, the caller can provide a function to convert a genotype into a vector.
-
-    Returns
-    -------
-    list[float]
-        The standard deviation of the population's genotype, per generation
-    """
-    data = [[] for _ in range(ea.num_steps + 1)]
-
-    with Session(ea.engine) as session:
-        for genotype, birth, death in session.exec(select(Individual.genotype_, Individual.time_of_birth, Individual.time_of_death)):
-            for generation in range(birth, death + 1):
-                data[generation].append(vector_conversion(genotype))
-
-    data = np.array(data)
-
-    return data.std(axis=1).mean(axis=1)
+def diversity(population: Population) -> float:
+    return float(np.array([ind.genotype for ind in population]).std(axis=0).mean())
