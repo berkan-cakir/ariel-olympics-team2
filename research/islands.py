@@ -1,7 +1,8 @@
 from itertools import chain, repeat
+from typing import Any
 
 from ariel.ec import Population
-from ariel.ec.ea import EA
+from ariel.ec.ea import EA, EAOperation
 
 from rich.progress import (
     BarColumn,
@@ -16,10 +17,12 @@ class IslandEA(EA):
     def __init__(
             self,
             population: Population | None = None,
-            migration_interval=10,
-            migration_count=2,
-            island_sizes=[20, 20, 20],
-            island_kwargs=[{}, {}, {}],
+            operations: list[EAOperation] | None = None,
+            *,
+            migration_interval: int = 10,
+            migration_count: int = 2,
+            island_sizes: list[int] = [20, 20, 20],
+            island_kwargs: list[dict[str, Any]] = [{}, {}, {}],
             **kwargs
     ) -> None:
         self.migration_interval = migration_interval
@@ -35,7 +38,10 @@ class IslandEA(EA):
             for island, individual in zip(chain(*(repeat(i, size) for i, size in enumerate(island_sizes))), population):
                 individual.tags['island'] = island
 
-        super().__init__(population=population, **kwargs)
+        if len(island_sizes) != len(island_kwargs):
+            raise ValueError(f"Number of islands does not match number of island kwargs dicts {len(island_sizes)} != {len(island_kwargs)}")
+
+        super().__init__(population=population, operations=operations, **kwargs)
 
     @property
     def num_islands(self) -> int:
@@ -43,8 +49,6 @@ class IslandEA(EA):
 
     # TODO consider making this a property
     def island_pops(self) -> list[Population]:
-        self.fetch_population()
-
         island_pops = [Population([]) for _ in self.island_sizes]
         for individual in self.population:
             island_pops[individual.tags['island']].append(individual)
@@ -61,12 +65,16 @@ class IslandEA(EA):
 
     def step(self) -> None:
         self.current_generation += 1
+        self.fetch_population()
 
         island_pops = self.island_pops()
         new_population = []
 
         for island, (island_pop, kwargs) in enumerate(zip(island_pops, self.island_kwargs)):
             for op in self.operations:
+                # Copy with island-specific kwargs, which override any baked-in kwargs
+                op = EAOperation(op.func, *op.args, **op.kwargs | kwargs)
+
                 island_pop = op(island_pop, **kwargs)
 
             for individual in island_pop:
@@ -75,6 +83,9 @@ class IslandEA(EA):
             new_population.extend(island_pop)
 
         self.population = Population(new_population)
+
+        if self.current_generation % self.migration_interval == 0:
+            self.migrate()
 
         self._commit()
 
@@ -92,8 +103,8 @@ class IslandEA(EA):
             )
             for step in range(1, self.num_steps + 1):
                 self.step()
-                if step % self.migration_interval == 0:
-                    self.migrate()
+                # if step % self.migration_interval == 0:
+                #     self.migrate()
 
                 progress.advance(task)
 

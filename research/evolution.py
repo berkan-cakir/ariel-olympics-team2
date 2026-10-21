@@ -3,7 +3,7 @@ from collections.abc import Callable
 from functools import partial
 from multiprocessing import get_context
 from multiprocessing.pool import Pool
-from typing import Literal
+from typing import Any, Literal
 
 from sqlmodel import Session, select
 
@@ -46,6 +46,8 @@ class EvolutionConfig(EASettings):
     islands: bool = False
     migration_interval: int = 10
     migration_size: int = 2
+    island_sizes: list[int] = [20, 20, 20]
+    island_kwargs: list[dict[str, Any]] = [{"fitness_config": FitnessConfig(environments=(env,))} for env in range(3)]
     seed: int = 0
     workers: int = 1
     fitness: FitnessConfig = Field(default_factory=FitnessConfig)
@@ -78,9 +80,9 @@ def initial_population(cfg: EvolutionConfig, n_genes: int) -> Population:
 
 
 @EAOperation
-def evaluate(population: Population, cfg: EvolutionConfig, pool: Pool) -> Population:
+def evaluate(population: Population, body: str, controller: BrainConfig, fitness_config: FitnessConfig, pool: Pool, **kwargs) -> Population:
     todo = population.unevaluated
-    score = partial(fitness, body=cfg.body, controller=cfg.controller, cfg=cfg.fitness)
+    score = partial(fitness, body=body, controller=controller, cfg=fitness_config)
     genotypes = [np.asarray(ind.genotype) for ind in todo]
     for ind, value in zip(todo, pool.imap(score, genotypes, chunksize=1), strict=True):
         ind.fitness = value
@@ -88,17 +90,19 @@ def evaluate(population: Population, cfg: EvolutionConfig, pool: Pool) -> Popula
 
 
 @EAOperation
-def parent_selection(population: Population, tournament_size: int) -> Population:
+def parent_selection(population: Population, tournament_size: int, **kwargs) -> Population:
     for ind in population:
-        ind.tags = {"ps": 0}
+        # ind.tags = {"ps": 0}
+        ind.tags["ps"] = 0
     for _ in range(population.size // 2 * 2):
         winner = population.sample(tournament_size).best(sort="max")[0]
-        winner.tags = {"ps": winner.tags["ps"] + 1}
+        # winner.tags = {"ps": winner.tags["ps"] + 1}
+        winner.tags["ps"] += 1
     return population
 
 
 @EAOperation
-def crossover(population: Population, rate: float, kind: str) -> Population:
+def crossover(population: Population, rate: float, kind: str, **kwargs) -> Population:
     parents = [ind for ind in population for _ in range(ind.tags.get("ps", 0))]
     random.shuffle(parents)
     operator = getattr(Crossover, kind)
@@ -109,31 +113,33 @@ def crossover(population: Population, rate: float, kind: str) -> Population:
         for genotype in genotypes:
             child = Individual()
             child.genotype = list(genotype)
-            child.tags = {"mut": True}
+            # child.tags = {"mut": True}
+            child.tags["mut"] = True
             population.append(child)
     return population
 
 
 @EAOperation
-def mutation(population: Population, rate: float, std: float) -> Population:
+def mutation(population: Population, rate: float, std: float, **kwargs) -> Population:
     for ind in population.where(lambda ind: ind.tags.get("mut", False)):
         ind.genotype = FloatMutator.gaussian(
             ind.genotype, std=std, mutation_probability=rate, lower_bound=-1.0, upper_bound=1.0
         )
-        ind.tags = {"mut": False}
+        # ind.tags = {"mut": False}
+        ind.tags["mut"] = False
     return population
 
 
 @EAOperation
-def survivor_selection(population: Population, size: int, tournament_size: int) -> Population:
-    while population.alive.size > size:
+def survivor_selection(population: Population, target_population_size: int, tournament_size: int, **kwargs) -> Population:
+    while population.alive.size > target_population_size:
         loser = population.alive.sample(tournament_size).best(sort="min")[0]
         loser.alive = False
     return population
 
 
 @EAOperation
-def revde_variation(population: Population, scaling_factor: float) -> Population:
+def revde_variation(population: Population, scaling_factor: float, **kwargs) -> Population:
     revde = RevDE(scaling_factor)
     parents = population.alive.shuffle()
     for i in range(0, parents.size // 3 * 3, 3):
@@ -146,8 +152,8 @@ def revde_variation(population: Population, scaling_factor: float) -> Population
 
 
 @EAOperation
-def truncation_selection(population: Population, size: int) -> Population:
-    for ind in population.alive.sort(sort="max")[size:]:
+def truncation_selection(population: Population, target_population_size: int, **kwargs) -> Population:
+    for ind in population.alive.sort(sort="max")[target_population_size:]:
         ind.alive = False
     return population
 
@@ -157,16 +163,16 @@ def ga(cfg: EvolutionConfig, pool: Pool) -> list[EAOperation]:
         parent_selection(tournament_size=cfg.parent_tournament_size),
         crossover(rate=cfg.crossover_rate, kind=cfg.crossover_kind),
         mutation(rate=cfg.mutation_rate, std=cfg.mutation_std),
-        evaluate(cfg=cfg, pool=pool),
-        survivor_selection(size=cfg.target_population_size, tournament_size=cfg.survivor_tournament_size),
+        evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool),
+        survivor_selection(target_population_size=cfg.target_population_size, tournament_size=cfg.survivor_tournament_size),
     ]
 
 
 def revde(cfg: EvolutionConfig, pool: Pool) -> list[EAOperation]:
     return [
         revde_variation(scaling_factor=cfg.revde_scaling_factor),
-        evaluate(cfg=cfg, pool=pool),
-        truncation_selection(size=cfg.target_population_size),
+        evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool),
+        truncation_selection(target_population_size=cfg.target_population_size),
     ]
 
 
@@ -177,10 +183,10 @@ def evolve(cfg: EvolutionConfig) -> EA:
     seed_everything(cfg.seed)
     n_genes = CONTROLLERS[cfg.controller.name].genome_size(count_actuators(cfg.body), cfg.controller)
     with get_context("spawn").Pool(cfg.workers, initializer=limit_threads) as pool:
-        population = evaluate(cfg=cfg, pool=pool)(initial_population(cfg, n_genes))
+        population = evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool)(initial_population(cfg, n_genes))
         ea = EA(
-            population,
-            ALGORITHMS[cfg.algorithm](cfg, pool),
+            population=population,
+            operations=ALGORITHMS[cfg.algorithm](cfg, pool),
             num_steps=cfg.num_steps,
             first_generation_id=cfg.first_generation_id,
             quiet=cfg.quiet,
@@ -195,11 +201,19 @@ def evolve(cfg: EvolutionConfig) -> EA:
 def evolve_islands(cfg: EvolutionConfig):
     seed_everything(cfg.seed)
     n_genes = CONTROLLERS[cfg.controller.name].genome_size(count_actuators(cfg.body), cfg.controller)
+
+    # Make sure population size matches total island sizes
+    cfg.target_population_size = sum(cfg.island_sizes)
+
+    # Hacky way to ensure each island uses the right size for survivor selection
+    for kwargs_dict, size in zip(cfg.island_kwargs, cfg.island_sizes):
+        kwargs_dict['target_population_size'] = size
+
     with get_context("spawn").Pool(cfg.workers, initializer=limit_threads) as pool:
-        population = evaluate(cfg=cfg, pool=pool)(initial_population(cfg, n_genes))
+        population = evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool)(initial_population(cfg, n_genes))
         ea = IslandEA(
-            population,
-            ALGORITHMS[cfg.algorithm](cfg, pool),
+            population=population,
+            operations=ALGORITHMS[cfg.algorithm](cfg, pool),
             num_steps=cfg.num_steps,
             first_generation_id=cfg.first_generation_id,
             quiet=cfg.quiet,
@@ -207,6 +221,8 @@ def evolve_islands(cfg: EvolutionConfig):
             db_handling=cfg.db_handling,
             migration_interval=cfg.migration_interval,
             migration_count=cfg.migration_size,
+            island_kwargs=cfg.island_kwargs,
+            island_sizes=cfg.island_sizes,
         )
         (cfg.output_folder / "config.json").write_text(cfg.model_dump_json(indent=2))
         ea.run()
@@ -284,3 +300,18 @@ def diversity(ea: EA, vector_conversion: Callable[..., list[float]] = lambda x: 
     data = np.array(data)
 
     return data.std(axis=1).mean(axis=1)
+
+
+def main():
+    # This is just for testing; change as needed
+    evolve(EvolutionConfig(
+        output_folder="__data__/gecko_no_island_revde_2",
+        island_sizes=[5, 5, 5],
+        target_population_size=5,
+        num_steps=5,
+        algorithm='revde'
+    ))
+
+
+if __name__ == '__main__':
+    main()
