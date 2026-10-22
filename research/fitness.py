@@ -39,7 +39,7 @@ TERRAIN_DIMS = (100, 100)
 RUGGED_HEIGHT = 0.1  # m between the lowest and highest point of the rugged terrain (ARIEL's default is 0.5)
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
-LATERAL_PENALTY = 0.1  # m/s of race speed lost per m of mean sideways drift off the straight line
+LATERAL_PENALTY = 0.0  # m/s of race speed lost per m of mean sideways drift off the straight line, 0 = off
 BUILDER_FUNCTION = "custom_robot"  # the function ARIEL's 3D robot builder exports
 
 PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
