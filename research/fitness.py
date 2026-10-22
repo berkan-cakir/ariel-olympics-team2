@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from typing import Literal
 
 import mujoco as mj
 import numpy as np
@@ -61,6 +62,8 @@ PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
 class FitnessConfig:
     environments: tuple[int, ...] = (0,)
     weights: tuple[float, ...] | None = None
+    # How per-environment speeds combine: "mean" is the (weighted) average, "min" is the slowest environment
+    aggregate: Literal["mean", "min"] = "mean"
 
     def __post_init__(self) -> None:
         if unknown := set(self.environments) - WORLDS.keys():
@@ -68,6 +71,9 @@ class FitnessConfig:
             raise ValueError(msg)
         if self.weights is not None and len(self.weights) != len(self.environments):
             msg = f"Got {len(self.weights)} weights for {len(self.environments)} environments."
+            raise ValueError(msg)
+        if self.aggregate == "min" and self.weights is not None:
+            msg = "Weights only apply to aggregate='mean'."
             raise ValueError(msg)
 
 
@@ -195,4 +201,20 @@ def fitness(genotype: np.ndarray, body: str, controller: BrainConfig, cfg: Fitne
         brain = brain_type(genotype, len(robot.spec.actuators), CONTROL_STEPS * TIMESTEP, controller)
         path = simulate(brain, robot, env_id)
         scores.append(0.0 if path is None else race_speed(path))
-    return float(np.average(scores, weights=cfg.weights))
+    return AGGREGATES[cfg.aggregate](scores, cfg.weights)
+
+
+def mean_fitness(scores: list[float], weights: tuple[float, ...] | None) -> float:
+    # Original fitness: (weighted) average speed over the environments
+    return float(np.average(scores, weights=weights))
+
+
+def min_fitness(scores: list[float], weights: tuple[float, ...] | None) -> float:  # noqa: ARG001
+    # fitness(i) = min over environments of speed(i): the robot is only as good as its worst terrain
+    return float(np.min(scores))
+
+
+AGGREGATES: dict[str, Callable[[list[float], tuple[float, ...] | None], float]] = {
+    "mean": mean_fitness,
+    "min": min_fitness,
+}

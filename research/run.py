@@ -59,6 +59,8 @@ def parse_args() -> argparse.Namespace:
                    help="ARIEL prebuilt body names (see fitness.PREBUILT_BODIES) or .py / .json body files")
     g.add_argument("--environments", type=int, nargs="+", choices=[0, 1, 2, 3], default=[0])
     g.add_argument("--weights", type=float, nargs="+", default=None)
+    g.add_argument("--aggregate", choices=["mean", "min"], default="mean",
+                   help="combine per-environment speeds: mean (weighted average) or min (slowest environment)")
     g.add_argument("--islands", action="store_true")
     g.add_argument("--generations", type=int, default=50)
     g.add_argument("--evaluations", type=int, default=None,
@@ -101,7 +103,7 @@ def seeds(args: argparse.Namespace) -> range:
 
 
 def fitness_config(args: argparse.Namespace) -> FitnessConfig:
-    return FitnessConfig(tuple(args.environments), tuple(args.weights) if args.weights else None)
+    return FitnessConfig(tuple(args.environments), tuple(args.weights) if args.weights else None, args.aggregate)
 
 
 def suggest_params(trial: optuna.Trial, args: argparse.Namespace) -> dict:
