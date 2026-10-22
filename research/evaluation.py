@@ -99,13 +99,9 @@ def main() -> None:
 
     environments = tuple(args.environments or cfg.fitness.environments)
     for env_id in environments:
-        speed = fitness(genotype, cfg.body, cfg.controller, FitnessConfig((env_id,), lateral_penalty=0.0))
-        reached = "yes" if speed >= GOAL / TIME_LIMIT else "no"
-        line = f"environment {env_id}: race speed {speed:.4f} m/s, reached {GOAL:g} m: {reached}"
-        if penalty := cfg.fitness.lateral_penalty:
-            score = fitness(genotype, cfg.body, cfg.controller, FitnessConfig((env_id,), lateral_penalty=penalty))
-            line += f", fitness with lateral penalty {score:.4f}"
-        console.log(line)
+        score = fitness(genotype, cfg.body, cfg.controller, FitnessConfig((env_id,)))
+        reached = "yes" if score >= GOAL / TIME_LIMIT else "no"
+        console.log(f"environment {env_id}: race speed {score:.4f} m/s, reached {GOAL:g} m: {reached}")
 
     for env_id in environments:
         if args.video:
