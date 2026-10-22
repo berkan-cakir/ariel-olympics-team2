@@ -37,6 +37,7 @@ TERRAIN_SEED = 42
 TERRAIN_DIMS = (100, 100)
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
+LATERAL_PENALTY = 0.1  # m/s of race speed lost per m of mean sideways drift off the straight line
 BUILDER_FUNCTION = "custom_robot"  # the function ARIEL's 3D robot builder exports
 
 PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
@@ -61,8 +62,12 @@ PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
 class FitnessConfig:
     environments: tuple[int, ...] = (0,)
     weights: tuple[float, ...] | None = None
+    lateral_penalty: float = LATERAL_PENALTY
 
     def __post_init__(self) -> None:
+        if self.lateral_penalty < 0:
+            msg = f"Lateral penalty must be non-negative, got {self.lateral_penalty}."
+            raise ValueError(msg)
         if unknown := set(self.environments) - WORLDS.keys():
             msg = f"Unknown environments {sorted(unknown)}, choose from {sorted(WORLDS)}."
             raise ValueError(msg)
@@ -175,16 +180,38 @@ def simulate(brain: Brain, body: CoreModule, env_id: int) -> np.ndarray | None:
     return np.array(tracker.history["xpos"][0])
 
 
+def race_end(distance: np.ndarray) -> int:
+    # The step where the robot crosses the finish line, or reaches its furthest point if it never does
+    crossed = np.flatnonzero(distance >= GOAL)
+    return int(crossed[0]) if crossed.size else int(distance.argmax())
+
+
 def race_speed(path: np.ndarray) -> float:
     # Average speed over the race: GOAL / finish time for a finisher, else furthest distance / race time.
     # Both are GOAL / race time at the finish line, so every finisher beats every non-finisher.
     distance = xy_displacement(path[0], path.T)
-    crossed = np.flatnonzero(distance >= GOAL)
-    if crossed.size == 0:
+    if distance.max() < GOAL:
         return float(distance.max() / ((len(path) - 1) * TIMESTEP))
-    step = crossed[0]
+    step = race_end(distance)
     before, after = distance[step - 1], distance[step]
     return float(GOAL / ((step - 1 + (GOAL - before) / (after - before)) * TIMESTEP))
+
+
+def lateral_drift(path: np.ndarray) -> float:
+    # Mean sideways distance (m) of the path from the straight line between the start and the race end,
+    # so a robot that weaves or curves towards its end point scores worse than one that walks straight.
+    xy = path[:, :2] - path[0, :2]
+    end = race_end(np.linalg.norm(xy, axis=1))
+    span = np.linalg.norm(xy[end])
+    if span == 0:
+        return 0.0
+    heading = xy[end] / span
+    return float(np.abs(xy[: end + 1] @ np.array([-heading[1], heading[0]])).mean())
+
+
+def score(path: np.ndarray, lateral_penalty: float) -> float:
+    # Floored at 0, the score of an unstable simulation, so drifting is never worse than blowing up
+    return max(0.0, race_speed(path) - lateral_penalty * lateral_drift(path))
 
 
 def fitness(genotype: np.ndarray, body: str, controller: BrainConfig, cfg: FitnessConfig) -> float:
@@ -194,5 +221,5 @@ def fitness(genotype: np.ndarray, body: str, controller: BrainConfig, cfg: Fitne
         robot = load_body(body)
         brain = brain_type(genotype, len(robot.spec.actuators), CONTROL_STEPS * TIMESTEP, controller)
         path = simulate(brain, robot, env_id)
-        scores.append(0.0 if path is None else race_speed(path))
+        scores.append(0.0 if path is None else score(path, cfg.lateral_penalty))
     return float(np.average(scores, weights=cfg.weights))
