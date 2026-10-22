@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from typing import Literal
 
 import mujoco as mj
 import numpy as np
@@ -35,6 +36,7 @@ TIMESTEP = 0.002  # s, MuJoCo's default, which ARIEL's worlds keep
 CONTROL_STEPS = 50  # physics steps per brain call, as in ARIEL's Controller
 TERRAIN_SEED = 42
 TERRAIN_DIMS = (100, 100)
+RUGGED_HEIGHT = 0.1  # m between the lowest and highest point of the rugged terrain (ARIEL's default is 0.5)
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
 LATERAL_PENALTY = 0.1  # m/s of race speed lost per m of mean sideways drift off the straight line
@@ -62,6 +64,8 @@ PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
 class FitnessConfig:
     environments: tuple[int, ...] = (0,)
     weights: tuple[float, ...] | None = None
+    # How per-environment speeds combine: "mean" is the (weighted) average, "min" is the slowest environment
+    aggregate: Literal["mean", "min"] = "mean"
     lateral_penalty: float = LATERAL_PENALTY
 
     def __post_init__(self) -> None:
@@ -73,6 +77,9 @@ class FitnessConfig:
             raise ValueError(msg)
         if self.weights is not None and len(self.weights) != len(self.environments):
             msg = f"Got {len(self.weights)} weights for {len(self.environments)} environments."
+            raise ValueError(msg)
+        if self.aggregate == "min" and self.weights is not None:
+            msg = "Weights only apply to aggregate='mean'."
             raise ValueError(msg)
 
 
@@ -111,7 +118,8 @@ def terrain(name: str, depth: float, heightmap: np.ndarray) -> CompoundWorld:
 # ARIEL's RuggedTerrainWorld, CraterTerrainWorld and AmphitheatreTerrainWorld with their default parameters,
 # rebuilt from the same heightmaps with a fixed seed so that every evaluation sees the same ground.
 def rugged() -> CompoundWorld:
-    return terrain("rugged-world", 1, noise(4) * smooth_edges_heightmap(TERRAIN_DIMS, edge_width=0.2))
+    # MuJoCo rescales a heightfield to [0, depth / 2], so the depth alone sets how rough the terrain is
+    return terrain("rugged-world", 2 * RUGGED_HEIGHT, noise(4) * smooth_edges_heightmap(TERRAIN_DIMS, edge_width=0.2))
 
 
 def crater() -> CompoundWorld:
@@ -222,4 +230,20 @@ def fitness(genotype: np.ndarray, body: str, controller: BrainConfig, cfg: Fitne
         brain = brain_type(genotype, len(robot.spec.actuators), CONTROL_STEPS * TIMESTEP, controller)
         path = simulate(brain, robot, env_id)
         scores.append(0.0 if path is None else score(path, cfg.lateral_penalty))
-    return float(np.average(scores, weights=cfg.weights))
+    return AGGREGATES[cfg.aggregate](scores, cfg.weights)
+
+
+def mean_fitness(scores: list[float], weights: tuple[float, ...] | None) -> float:
+    # Original fitness: (weighted) average speed over the environments
+    return float(np.average(scores, weights=weights))
+
+
+def min_fitness(scores: list[float], weights: tuple[float, ...] | None) -> float:  # noqa: ARG001
+    # fitness(i) = min over environments of speed(i): the robot is only as good as its worst terrain
+    return float(np.min(scores))
+
+
+AGGREGATES: dict[str, Callable[[list[float], tuple[float, ...] | None], float]] = {
+    "mean": mean_fitness,
+    "min": min_fitness,
+}

@@ -104,7 +104,7 @@ def seeds(args: argparse.Namespace) -> range:
 
 def fitness_config(args: argparse.Namespace) -> FitnessConfig:
     return FitnessConfig(tuple(args.environments), tuple(args.weights) if args.weights else None,
-                         args.lateral_penalty)
+                         lateral_penalty=args.lateral_penalty)
 
 
 def suggest_params(trial: optuna.Trial, args: argparse.Namespace) -> dict:
