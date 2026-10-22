@@ -36,6 +36,7 @@ TIMESTEP = 0.002  # s, MuJoCo's default, which ARIEL's worlds keep
 CONTROL_STEPS = 50  # physics steps per brain call, as in ARIEL's Controller
 TERRAIN_SEED = 42
 TERRAIN_DIMS = (100, 100)
+RUGGED_HEIGHT = 0.1  # m between the lowest and highest point of the rugged terrain (ARIEL's default is 0.5)
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
 BUILDER_FUNCTION = "custom_robot"  # the function ARIEL's 3D robot builder exports
@@ -112,7 +113,8 @@ def terrain(name: str, depth: float, heightmap: np.ndarray) -> CompoundWorld:
 # ARIEL's RuggedTerrainWorld, CraterTerrainWorld and AmphitheatreTerrainWorld with their default parameters,
 # rebuilt from the same heightmaps with a fixed seed so that every evaluation sees the same ground.
 def rugged() -> CompoundWorld:
-    return terrain("rugged-world", 1, noise(4) * smooth_edges_heightmap(TERRAIN_DIMS, edge_width=0.2))
+    # MuJoCo rescales a heightfield to [0, depth / 2], so the depth alone sets how rough the terrain is
+    return terrain("rugged-world", 2 * RUGGED_HEIGHT, noise(4) * smooth_edges_heightmap(TERRAIN_DIMS, edge_width=0.2))
 
 
 def crater() -> CompoundWorld:
