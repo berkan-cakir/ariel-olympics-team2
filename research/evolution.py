@@ -1,5 +1,6 @@
 import random
 from collections.abc import Callable
+from dataclasses import replace
 from functools import partial
 from multiprocessing import get_context
 from multiprocessing.pool import Pool
@@ -22,10 +23,14 @@ from ariel.ec import (
 from ariel.simulation.environments import SimpleFlatWorld
 from ariel.utils.optimizers.revde import RevDE
 from pydantic import Field
+from sqlalchemy import Engine
+from sqlmodel import Session, select
 
 from controller import CONTROLLERS, BrainConfig
 from fitness import FitnessConfig, fitness, load_body
 from islands import IslandEA
+
+FINAL_ELITES = 10
 
 
 class EvolutionConfig(EASettings):
@@ -44,8 +49,8 @@ class EvolutionConfig(EASettings):
     islands: bool = False
     migration_interval: int = 10
     migration_size: int = 2
-    island_sizes: list[int] = [20, 20, 20]
-    island_kwargs: list[dict[str, Any]] = [{"fitness_config": FitnessConfig(environments=(env,))} for env in range(3)]
+    island_sizes: list[int] = Field(default_factory=list)
+    island_kwargs: list[dict[str, Any]] = Field(default_factory=list)
     seed: int = 0
     workers: int = 1
     fitness: FitnessConfig = Field(default_factory=FitnessConfig)
@@ -77,12 +82,24 @@ def initial_population(cfg: EvolutionConfig, n_genes: int) -> Population:
     return Population(individuals)
 
 
+def score(job: tuple[np.ndarray, FitnessConfig], body: str, controller: BrainConfig) -> float:
+    genotype, cfg = job
+    return fitness(genotype, body, controller, cfg)
+
+
 @EAOperation
-def evaluate(population: Population, body: str, controller: BrainConfig, fitness_config: FitnessConfig, pool: Pool, **kwargs) -> Population:
+def evaluate(
+    population: Population,
+    body: str,
+    controller: BrainConfig,
+    fitness_config: FitnessConfig,
+    pool: Pool,
+    island_configs: list[FitnessConfig] | None = None,
+    **kwargs,
+) -> Population:
     todo = population.unevaluated
-    score = partial(fitness, body=body, controller=controller, cfg=fitness_config)
-    genotypes = [np.asarray(ind.genotype) for ind in todo]
-    for ind, value in zip(todo, pool.imap(score, genotypes, chunksize=1), strict=True):
+    jobs = [(np.asarray(ind.genotype), island_configs[ind.tags["island"]] if island_configs else fitness_config) for ind in todo]
+    for ind, value in zip(todo, pool.imap(partial(score, body=body, controller=controller), jobs, chunksize=1), strict=True):
         ind.fitness = value
     return population
 
@@ -196,21 +213,27 @@ def evolve(cfg: EvolutionConfig) -> EA:
     return ea
 
 
+def island_sizes(population_size: int, islands: int) -> list[int]:
+    return [population_size // islands + (i < population_size % islands) for i in range(islands)]
+
+
+def offspring(population_size: int, algorithm: str) -> int:
+    return population_size // 3 * 3 if algorithm == "revde" else population_size // 2 * 2
+
+
 def evolve_islands(cfg: EvolutionConfig):
     seed_everything(cfg.seed)
     n_genes = CONTROLLERS[cfg.controller.name].genome_size(count_actuators(cfg.body), cfg.controller)
 
-    # Make sure population size matches total island sizes
-    cfg.target_population_size = sum(cfg.island_sizes)
-
-    # Hacky way to ensure each island uses the right size for survivor selection
-    for kwargs_dict, size in zip(cfg.island_kwargs, cfg.island_sizes):
-        kwargs_dict['target_population_size'] = size
+    cfg.island_sizes = island_sizes(cfg.target_population_size, len(cfg.fitness.environments))
+    cfg.island_kwargs = [
+        {"fitness_config": replace(cfg.fitness, environments=(env,), weights=None), "target_population_size": size}
+        for env, size in zip(cfg.fitness.environments, cfg.island_sizes, strict=True)
+    ]
 
     with get_context("spawn").Pool(cfg.workers, initializer=limit_threads) as pool:
-        population = evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool)(initial_population(cfg, n_genes))
         ea = IslandEA(
-            population=population,
+            population=initial_population(cfg, n_genes),
             operations=ALGORITHMS[cfg.algorithm](cfg, pool),
             num_steps=cfg.num_steps,
             first_generation_id=cfg.first_generation_id,
@@ -224,7 +247,34 @@ def evolve_islands(cfg: EvolutionConfig):
         )
         (cfg.output_folder / "config.json").write_text(cfg.model_dump_json(indent=2))
         ea.run()
+        score_elites(ea, cfg, pool)
     return ea
+
+
+def score_elites(ea: IslandEA, cfg: EvolutionConfig, pool: Pool) -> None:
+    with Session(ea.engine) as session:
+        everyone = Population(list(session.exec(select(Individual))))
+        chosen = {ind.id: ind for ind in everyone if ind.alive}
+        for island in range(ea.num_islands):
+            for ind in everyone.where(lambda ind, island=island: ind.tags.get("island") == island).best(n=FINAL_ELITES):
+                chosen[ind.id] = ind
+        jobs = [(np.asarray(ind.genotype), cfg.fitness) for ind in chosen.values()]
+        scores = pool.imap(partial(score, body=cfg.body, controller=cfg.controller), jobs, chunksize=1)
+        for ind, value in zip(chosen.values(), scores, strict=True):
+            ind.tags = {"combined": value}
+        session.commit()
+
+
+def best_combined(engine: Engine) -> Individual:
+    with Session(engine) as session:
+        scored = [ind for ind in session.exec(select(Individual)) if "combined" in ind.tags]
+    return max(scored, key=lambda ind: ind.tags["combined"])
+
+
+def best_fitness(ea: EA) -> float:
+    if isinstance(ea, IslandEA):
+        return best_combined(ea.engine).tags["combined"]
+    return ea.get_solution("best", only_alive=False).fitness
 
 
 def fitness_stats(population: Population) -> dict[str, float]:
