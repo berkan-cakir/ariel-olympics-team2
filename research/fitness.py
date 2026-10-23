@@ -37,6 +37,9 @@ CONTROL_STEPS = 50  # physics steps per brain call, as in ARIEL's Controller
 TERRAIN_SEED = 42
 TERRAIN_DIMS = (100, 100)
 RUGGED_HEIGHT = 0.1  # m between the lowest and highest point of the rugged terrain (ARIEL's default is 0.5)
+LINOLEUM_FRICTION = 0.3  # sliding friction of the slippery floor; every other surface keeps MuJoCo's default of 1
+CARPET_FRICTION = 1.5
+SLOPE_DEGREES = 10.0  # incline of the carpet funnel around the start
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
 LATERAL_PENALTY = 0.0  # m/s of race speed lost per m of mean sideways drift off the straight line, 0 = off
@@ -132,7 +135,43 @@ def amphitheatre() -> CompoundWorld:
     return terrain("amphitheatre-world", 2, rings + 0.3 * noise(5))
 
 
-WORLDS: dict[int, Callable[[], BaseWorld]] = {0: SimpleFlatWorld, 1: rugged, 2: crater, 3: amphitheatre}
+def surface(world: BaseWorld, friction: float, rgba: tuple[float, float, float, float]) -> BaseWorld:
+    # MuJoCo uses the larger friction of two touching geoms unless one has priority,
+    # so the floor gets priority to make its own friction count against the robot's default of 1
+    for geom in world.spec.worldbody.find_all(mj.mjtObj.mjOBJ_GEOM):
+        geom.friction = [friction, *geom.friction[1:]]
+        geom.priority = 1
+        geom.material = ""
+        geom.rgba = rgba
+    return world
+
+
+def linoleum() -> BaseWorld:
+    return surface(SimpleFlatWorld(), LINOLEUM_FRICTION, (0.78, 0.74, 0.62, 1.0))
+
+
+def carpet() -> BaseWorld:
+    return surface(SimpleFlatWorld(), CARPET_FRICTION, (0.45, 0.12, 0.14, 1.0))
+
+
+def carpet_slope() -> BaseWorld:
+    # A funnel rising SLOPE_DEGREES in every direction up to the edge 5 m out, so no way away from the start
+    # is downhill: on a plain tilted floor a robot could score by sliding down or walking along the slope
+    xy = np.linspace(-1, 1, TERRAIN_DIMS[0])
+    funnel = np.minimum(np.hypot(*np.meshgrid(xy, xy)), 1)
+    rise = 5 * np.tan(np.radians(SLOPE_DEGREES))
+    return surface(terrain("carpet-slope-world", 2 * rise, funnel), CARPET_FRICTION, (0.45, 0.12, 0.14, 1.0))
+
+
+WORLDS: dict[int, Callable[[], BaseWorld]] = {
+    0: SimpleFlatWorld,
+    1: rugged,
+    2: crater,
+    3: amphitheatre,
+    4: linoleum,
+    5: carpet,
+    6: carpet_slope,
+}
 
 
 def make_world(env_id: int) -> BaseWorld:
