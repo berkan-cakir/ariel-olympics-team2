@@ -15,7 +15,17 @@ from matplotlib.ticker import MaxNLocator
 from rich.console import Console
 
 from controller import BrainConfig, parse_hidden
-from evolution import EvolutionConfig, diversity, evolve, evolve_islands, fitness_stats
+from evolution import (
+    FINAL_ELITES,
+    EvolutionConfig,
+    best_fitness,
+    diversity,
+    evolve,
+    evolve_islands,
+    fitness_stats,
+    island_sizes,
+    offspring,
+)
 from fitness import LATERAL_PENALTY, WORLDS, FitnessConfig
 
 HERE = Path(__file__).resolve().parent
@@ -131,8 +141,15 @@ def generations(args: argparse.Namespace, params: dict) -> int:
     if args.evaluations is None:
         return args.generations
     pop = params["pop_size"]
-    offspring = pop // 3 * 3 if params["algorithm"] == "revde" else pop // 2 * 2
-    return max(1, (args.evaluations - pop) // offspring)
+    if not args.islands:
+        return max(1, (args.evaluations - pop) // offspring(pop, params["algorithm"]))
+    n = len(args.environments)
+    per_generation = sum(offspring(size, params["algorithm"]) for size in island_sizes(pop, n))
+    budget = args.evaluations * n - pop - (pop + FINAL_ELITES * n) * n
+    g = budget // per_generation
+    while g > 1 and g * per_generation + g // params["migration_interval"] * params["migration_size"] * n > budget:
+        g -= 1
+    return max(1, g)
 
 
 def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, folder: Path) -> EvolutionConfig:
@@ -157,8 +174,7 @@ def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, fo
 
 def run_one(cfg: EvolutionConfig) -> float:
     start = time.perf_counter()
-    ea = evolve_islands(cfg) if cfg.islands else evolve(cfg)
-    best = ea.get_solution("best", only_alive=False).fitness
+    best = best_fitness(evolve_islands(cfg) if cfg.islands else evolve(cfg))
     console.log(f"seed {cfg.seed}: best fitness {best:.4f} in {time.perf_counter() - start:.0f} s, saved to {cfg.output_folder}")
     return best
 
