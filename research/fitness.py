@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from typing import Literal
 
 import mujoco as mj
 import numpy as np
@@ -35,8 +36,13 @@ TIMESTEP = 0.002  # s, MuJoCo's default, which ARIEL's worlds keep
 CONTROL_STEPS = 50  # physics steps per brain call, as in ARIEL's Controller
 TERRAIN_SEED = 42
 TERRAIN_DIMS = (100, 100)
+RUGGED_HEIGHT = 0.1  # m between the lowest and highest point of the rugged terrain (ARIEL's default is 0.5)
+LINOLEUM_FRICTION = 0.3  # sliding friction of the slippery floor; every other surface keeps MuJoCo's default of 1
+CARPET_FRICTION = 1.5
+SLOPE_DEGREES = 10.0  # incline of the carpet funnel around the start
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
+LATERAL_PENALTY = 0.0  # m/s of race speed lost per m of mean sideways drift off the straight line, 0 = off
 BUILDER_FUNCTION = "custom_robot"  # the function ARIEL's 3D robot builder exports
 
 PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
@@ -61,13 +67,22 @@ PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
 class FitnessConfig:
     environments: tuple[int, ...] = (0,)
     weights: tuple[float, ...] | None = None
+    # How per-environment speeds combine: "mean" is the (weighted) average, "min" is the slowest environment
+    aggregate: Literal["mean", "min"] = "mean"
+    lateral_penalty: float = LATERAL_PENALTY
 
     def __post_init__(self) -> None:
+        if self.lateral_penalty < 0:
+            msg = f"Lateral penalty must be non-negative, got {self.lateral_penalty}."
+            raise ValueError(msg)
         if unknown := set(self.environments) - WORLDS.keys():
             msg = f"Unknown environments {sorted(unknown)}, choose from {sorted(WORLDS)}."
             raise ValueError(msg)
         if self.weights is not None and len(self.weights) != len(self.environments):
             msg = f"Got {len(self.weights)} weights for {len(self.environments)} environments."
+            raise ValueError(msg)
+        if self.aggregate == "min" and self.weights is not None:
+            msg = "Weights only apply to aggregate='mean'."
             raise ValueError(msg)
 
 
@@ -106,7 +121,8 @@ def terrain(name: str, depth: float, heightmap: np.ndarray) -> CompoundWorld:
 # ARIEL's RuggedTerrainWorld, CraterTerrainWorld and AmphitheatreTerrainWorld with their default parameters,
 # rebuilt from the same heightmaps with a fixed seed so that every evaluation sees the same ground.
 def rugged() -> CompoundWorld:
-    return terrain("rugged-world", 1, noise(4) * smooth_edges_heightmap(TERRAIN_DIMS, edge_width=0.2))
+    # MuJoCo rescales a heightfield to [0, depth / 2], so the depth alone sets how rough the terrain is
+    return terrain("rugged-world", 2 * RUGGED_HEIGHT, noise(4) * smooth_edges_heightmap(TERRAIN_DIMS, edge_width=0.2))
 
 
 def crater() -> CompoundWorld:
@@ -119,7 +135,43 @@ def amphitheatre() -> CompoundWorld:
     return terrain("amphitheatre-world", 2, rings + 0.3 * noise(5))
 
 
-WORLDS: dict[int, Callable[[], BaseWorld]] = {0: SimpleFlatWorld, 1: rugged, 2: crater, 3: amphitheatre}
+def surface(world: BaseWorld, friction: float, rgba: tuple[float, float, float, float]) -> BaseWorld:
+    # MuJoCo uses the larger friction of two touching geoms unless one has priority,
+    # so the floor gets priority to make its own friction count against the robot's default of 1
+    for geom in world.spec.worldbody.find_all(mj.mjtObj.mjOBJ_GEOM):
+        geom.friction = [friction, *geom.friction[1:]]
+        geom.priority = 1
+        geom.material = ""
+        geom.rgba = rgba
+    return world
+
+
+def linoleum() -> BaseWorld:
+    return surface(SimpleFlatWorld(), LINOLEUM_FRICTION, (0.78, 0.74, 0.62, 1.0))
+
+
+def carpet() -> BaseWorld:
+    return surface(SimpleFlatWorld(), CARPET_FRICTION, (0.45, 0.12, 0.14, 1.0))
+
+
+def carpet_slope() -> BaseWorld:
+    # A funnel rising SLOPE_DEGREES in every direction up to the edge 5 m out, so no way away from the start
+    # is downhill: on a plain tilted floor a robot could score by sliding down or walking along the slope
+    xy = np.linspace(-1, 1, TERRAIN_DIMS[0])
+    funnel = np.minimum(np.hypot(*np.meshgrid(xy, xy)), 1)
+    rise = 5 * np.tan(np.radians(SLOPE_DEGREES))
+    return surface(terrain("carpet-slope-world", 2 * rise, funnel), CARPET_FRICTION, (0.45, 0.12, 0.14, 1.0))
+
+
+WORLDS: dict[int, Callable[[], BaseWorld]] = {
+    0: SimpleFlatWorld,
+    1: rugged,
+    2: crater,
+    3: amphitheatre,
+    4: linoleum,
+    5: carpet,
+    6: carpet_slope,
+}
 
 
 def make_world(env_id: int) -> BaseWorld:
@@ -175,16 +227,38 @@ def simulate(brain: Brain, body: CoreModule, env_id: int) -> np.ndarray | None:
     return np.array(tracker.history["xpos"][0])
 
 
+def race_end(distance: np.ndarray) -> int:
+    # The step where the robot crosses the finish line, or reaches its furthest point if it never does
+    crossed = np.flatnonzero(distance >= GOAL)
+    return int(crossed[0]) if crossed.size else int(distance.argmax())
+
+
 def race_speed(path: np.ndarray) -> float:
     # Average speed over the race: GOAL / finish time for a finisher, else furthest distance / race time.
     # Both are GOAL / race time at the finish line, so every finisher beats every non-finisher.
     distance = xy_displacement(path[0], path.T)
-    crossed = np.flatnonzero(distance >= GOAL)
-    if crossed.size == 0:
+    if distance.max() < GOAL:
         return float(distance.max() / ((len(path) - 1) * TIMESTEP))
-    step = crossed[0]
+    step = race_end(distance)
     before, after = distance[step - 1], distance[step]
     return float(GOAL / ((step - 1 + (GOAL - before) / (after - before)) * TIMESTEP))
+
+
+def lateral_drift(path: np.ndarray) -> float:
+    # Mean sideways distance (m) of the path from the straight line between the start and the race end,
+    # so a robot that weaves or curves towards its end point scores worse than one that walks straight.
+    xy = path[:, :2] - path[0, :2]
+    end = race_end(np.linalg.norm(xy, axis=1))
+    span = np.linalg.norm(xy[end])
+    if span == 0:
+        return 0.0
+    heading = xy[end] / span
+    return float(np.abs(xy[: end + 1] @ np.array([-heading[1], heading[0]])).mean())
+
+
+def score(path: np.ndarray, lateral_penalty: float) -> float:
+    # Floored at 0, the score of an unstable simulation, so drifting is never worse than blowing up
+    return max(0.0, race_speed(path) - lateral_penalty * lateral_drift(path))
 
 
 def fitness(genotype: np.ndarray, body: str, controller: BrainConfig, cfg: FitnessConfig) -> float:
@@ -194,5 +268,21 @@ def fitness(genotype: np.ndarray, body: str, controller: BrainConfig, cfg: Fitne
         robot = load_body(body)
         brain = brain_type(genotype, len(robot.spec.actuators), CONTROL_STEPS * TIMESTEP, controller)
         path = simulate(brain, robot, env_id)
-        scores.append(0.0 if path is None else race_speed(path))
-    return float(np.average(scores, weights=cfg.weights))
+        scores.append(0.0 if path is None else score(path, cfg.lateral_penalty))
+    return AGGREGATES[cfg.aggregate](scores, cfg.weights)
+
+
+def mean_fitness(scores: list[float], weights: tuple[float, ...] | None) -> float:
+    # Original fitness: (weighted) average speed over the environments
+    return float(np.average(scores, weights=weights))
+
+
+def min_fitness(scores: list[float], weights: tuple[float, ...] | None) -> float:  # noqa: ARG001
+    # fitness(i) = min over environments of speed(i): the robot is only as good as its worst terrain
+    return float(np.min(scores))
+
+
+AGGREGATES: dict[str, Callable[[list[float], tuple[float, ...] | None], float]] = {
+    "mean": mean_fitness,
+    "min": min_fitness,
+}

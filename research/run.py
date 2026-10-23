@@ -16,7 +16,7 @@ from rich.console import Console
 
 from controller import BrainConfig, parse_hidden
 from evolution import EvolutionConfig, diversity, evolve, evolve_islands, fitness_stats
-from fitness import FitnessConfig
+from fitness import LATERAL_PENALTY, WORLDS, FitnessConfig
 
 HERE = Path(__file__).resolve().parent
 console = Console()
@@ -57,8 +57,12 @@ def parse_args() -> argparse.Namespace:
     g = p.add_argument_group("experiment")
     g.add_argument("--bodies", nargs="+", default=["gecko"],
                    help="ARIEL prebuilt body names (see fitness.PREBUILT_BODIES) or .py / .json body files")
-    g.add_argument("--environments", type=int, nargs="+", choices=[0, 1, 2, 3], default=[0])
+    g.add_argument("--environments", type=int, nargs="+", choices=sorted(WORLDS), default=[0])
     g.add_argument("--weights", type=float, nargs="+", default=None)
+    g.add_argument("--aggregate", choices=["mean", "min"], default="mean",
+                   help="combine per-environment scores: (weighted) mean or the slowest environment")
+    g.add_argument("--lateral-penalty", type=float, default=LATERAL_PENALTY,
+                   help="m/s of race speed lost per m of mean sideways drift, 0 = off")
     g.add_argument("--islands", action="store_true")
     g.add_argument("--generations", type=int, default=50)
     g.add_argument("--evaluations", type=int, default=None,
@@ -101,7 +105,8 @@ def seeds(args: argparse.Namespace) -> range:
 
 
 def fitness_config(args: argparse.Namespace) -> FitnessConfig:
-    return FitnessConfig(tuple(args.environments), tuple(args.weights) if args.weights else None)
+    return FitnessConfig(tuple(args.environments), tuple(args.weights) if args.weights else None,
+                         args.aggregate, args.lateral_penalty)
 
 
 def suggest_params(trial: optuna.Trial, args: argparse.Namespace) -> dict:

@@ -13,7 +13,7 @@ from rich.console import Console
 
 from controller import CONTROLLERS
 from evolution import EvolutionConfig
-from fitness import CONTROL_STEPS, GOAL, TIME_LIMIT, TIMESTEP, FitnessConfig, build_scene, fitness, load_body
+from fitness import CONTROL_STEPS, GOAL, TIME_LIMIT, TIMESTEP, WORLDS, FitnessConfig, build_scene, fitness, load_body
 
 console = Console()
 
@@ -26,7 +26,7 @@ FRAME_SIZE = (640, 480)
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("checkpoint", type=Path, help="database.db written by the EA, or the run folder containing it")
-    p.add_argument("--environments", type=int, nargs="+", choices=[0, 1, 2, 3], default=None,
+    p.add_argument("--environments", type=int, nargs="+", choices=sorted(WORLDS), default=None,
                    help="default: the environments the checkpoint was trained on")
     p.add_argument("--video", type=Path, default=None, help="output folder; enables recording")
     p.add_argument("--duration", type=float, default=TIME_LIMIT, help="video length in seconds (default: the whole race)")
