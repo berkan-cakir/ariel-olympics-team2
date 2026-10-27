@@ -24,7 +24,7 @@ class IslandEA(EA):
             operations: list[EAOperation] | None = None,
             *,
             continue_from: str | Path | None = None,
-            first_generation_id: int | None = None,
+            # first_generation_id: int | None = None,
             migration_interval: int = 10,
             migration_count: int = 2,
             island_sizes: list[int] = [20, 20, 20],
@@ -46,47 +46,69 @@ class IslandEA(EA):
             with Session(source_engine) as session:
                 continue_gen = session.exec(select(func.max(Individual.time_of_birth))).one()
 
+                population = Population(session.exec(select(Individual)
+                                                     .where(Individual.alive)
+                                                     .where(Individual.requires_eval == False)
+                                                    ).all())
+
+            kwargs |= {
+                'db_file_path': continue_from,
+                'db_handling': 'continue',
+                'first_generation_id': continue_gen,
+                'restart': None,
+            }
+
+                # individuals = session.exec(select(Individual)
+                #                                           .where(Individual.alive)
+                #                                           .where(Individual.requires_eval == False)
+                #                                           )
+
+                # for island, ind in zip(chain(*(repeat(i, size) for i, size in enumerate(island_sizes))), individuals, strict=True):
+                #     ind.tags = {'island': island}
+
+                # session.commit()
+
                 # print(f"{continue_gen = }")
 
-                rows = list(
-                    session.exec(
-                        select(Individual)
-                        # .where(Individual.time_of_birth <= continue_gen)
-                        # .where(Individual.time_of_death >= continue_gen)
-                        .where(Individual.alive)
-                        .where(Individual.requires_eval == False)  # noqa: E712
-                    ).all()
-                )
+                # rows = list(
+                #     session.exec(
+                #         select(Individual)
+                #         # .where(Individual.time_of_birth <= continue_gen)
+                #         # .where(Individual.time_of_death >= continue_gen)
+                #         .where(Individual.alive)
+                #         .where(Individual.requires_eval == False)  # noqa: E712
+                #     ).all()
+                # )
 
                 # print([ind.alive for ind in rows], sep='\n')
                 # exit()
 
-            if not rows:
-                msg = (
-                    f"No evaluated individuals at generation {continue_gen} "
-                    f"in {continue_from}."
-                )
-                raise ValueError(msg)
+            # if not rows:
+            #     msg = (
+            #         f"No evaluated individuals at generation {continue_gen} "
+            #         f"in {continue_from}."
+            #     )
+            #     raise ValueError(msg)
 
-            population = Population(
-                [
-                    Individual(
-                        alive=True,
-                        time_of_birth=ind.time_of_birth,
-                        time_of_death=-1,
-                        # requires_eval=False,
-                        # fitness_=ind.fitness_,
-                        requires_init=ind.requires_init,
-                        genotype_=ind.genotype_,
-                        tags_=dict(ind.tags_) | {'island': island},
-                    )
-                    for island, ind in zip(chain(*(repeat(i, size) for i, size in enumerate(island_sizes))), rows, strict=True)
-                ]
-            )
-            if first_generation_id is None:
+            # population = Population(
+            #     [
+            #         Individual(
+            #             alive=True,
+            #             time_of_birth=ind.time_of_birth,
+            #             time_of_death=-1,
+            #             # requires_eval=False,
+            #             # fitness_=ind.fitness_,
+            #             requires_init=ind.requires_init,
+            #             genotype_=ind.genotype_,
+            #             tags_=dict(ind.tags_) | {'island': island},
+            #         )
+            #         for island, ind in zip(chain(*(repeat(i, size) for i, size in enumerate(island_sizes))), rows, strict=True)
+            #     ]
+            # )
+            # if first_generation_id is None:
                 # The +1 from EA's restart is a trap, as it skips a generation
                 # (step increments before committing)
-                first_generation_id = continue_gen
+                # first_generation_id = continue_gen
 
             # Somewhat hacky way to avoid the original DB being deleted;
             # typechecking doesn't like this (it's not one of the allowed literals),
@@ -98,7 +120,7 @@ class IslandEA(EA):
 
         if population is not None:
             if len(population) != sum(island_sizes):
-                raise ValueError(f"Population size ({len(population)}) must match total island size({sum(island_sizes)})")
+                raise ValueError(f"Population size ({len(population)}) must match total island size ({sum(island_sizes)})")
 
             # print("assigning islands")
 
@@ -114,7 +136,7 @@ class IslandEA(EA):
         super().__init__(
             population=population,
             operations=operations,
-            first_generation_id=first_generation_id,
+            # first_generation_id=first_generation_id,
             **kwargs
         )
 

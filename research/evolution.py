@@ -235,7 +235,7 @@ def evolve_islands(cfg: EvolutionConfig):
     n_genes = CONTROLLERS[cfg.controller.name].genome_size(count_actuators(cfg.body), cfg.controller)
 
     # cfg.island_sizes = island_sizes(cfg.target_population_size, cfg.island_sizes)
-    # print(f"{cfg.island_sizes = }")
+    print(f"{cfg.island_sizes = }")
     # print(f"{cfg.num_steps = }")
     cfg.island_kwargs = [
         {"fitness_config": replace(cfg.fitness, environments=(env,), weights=None), "target_population_size": size}
@@ -244,6 +244,8 @@ def evolve_islands(cfg: EvolutionConfig):
 
     with get_context("spawn").Pool(cfg.workers, initializer=limit_threads) as pool:
         if cfg.flat_pretraining > 0:
+            pretrain_cfg = cfg.model_copy(update={})
+
             pretrain_ea = EA(
                 population=initial_population(cfg, n_genes),
                 operations=ALGORITHMS[cfg.algorithm](cfg, pool),
@@ -329,11 +331,11 @@ def diversity(population: Population) -> float:
 def main():
     evolve_islands(EvolutionConfig(
         islands=True,
-        island_sizes=[3, 3, 6],
+        island_sizes=[2, 2, 2],
         num_steps=4,
         flat_pretraining=2,
         target_population_size=6,
-        fitness=FitnessConfig(environments=[0, 1, 2])
+        fitness=FitnessConfig(environments=(0, 1, 2))
     ))
 
 
