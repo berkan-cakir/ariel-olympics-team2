@@ -142,14 +142,14 @@ def suggest_params(trial: optuna.Trial, args: argparse.Namespace) -> dict:
     return params
 
 
-def generations(args: argparse.Namespace, params: dict) -> int:
+def generations(args: argparse.Namespace, params: dict, island_sizes: list[int]) -> int:
     if args.evaluations is None:
         return args.generations
     pop = params["pop_size"]
     if not args.islands:
         return max(1, (args.evaluations - pop) // offspring(pop, params["algorithm"]))
     n = len(args.environments)
-    per_generation = sum(offspring(size, params["algorithm"]) for size in island_sizes(pop, n))
+    per_generation = sum(offspring(size, params["algorithm"]) for size in island_sizes)
     budget = args.evaluations * n - pop - (pop + FINAL_ELITES * n) * n
     g = budget // per_generation
     while g > 1 and g * per_generation + g // params["migration_interval"] * params["migration_size"] * n > budget:
@@ -162,19 +162,23 @@ def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, fo
     if params["controller"] in MLP_CONTROLLERS:
         mlp = {"hidden": parse_hidden(params["mlp_hidden"]), "activation": params["mlp_activation"]}
     ea_params = {name: params[name] for name in GA_PARAMS + REVDE_PARAMS + ISLAND_PARAMS if name in params}
+    # ea_params['island_sizes'] = [float(s) for s in params["island_sizes"].split(',')]
+    ea_params['island_sizes'] = island_sizes(params['pop_size'], [float(s) for s in params["island_sizes"].split(',')])
+    ea_params['flat_pretraining'] = int(params['flat_pretraining'] * params["pop_size"])
+
     return EvolutionConfig(
         body=body,
         controller=BrainConfig(name=params["controller"], **mlp),
         algorithm=params["algorithm"],
-        num_steps=generations(args, params),
+        num_steps=generations(args, params, ea_params['island_sizes']),
         target_population_size=params["pop_size"],
         islands=args.islands,
         seed=seed,
         workers=args.workers,
         fitness=fitness_config(args),
         output_folder=folder,
-        flat_pretrain_gens=int(params['flat_pretraining'] * params["pop_size"]),
-        island_sizes=[float(s) for s in params["island_sizes"].split(',')],
+        # flat_pretraining=int(params['flat_pretraining'] * params["pop_size"]),
+        # island_sizes=[float(s) for s in params["island_sizes"].split(',')],
         **ea_params,
     )
 

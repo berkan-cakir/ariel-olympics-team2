@@ -54,7 +54,7 @@ class EvolutionConfig(EASettings):
     seed: int = 0
     workers: int = 1
     fitness: FitnessConfig = Field(default_factory=FitnessConfig)
-    flat_pretrain_gens: int = 0
+    flat_pretraining: int = 0
 
 
 def seed_everything(seed: int) -> None:
@@ -234,19 +234,20 @@ def evolve_islands(cfg: EvolutionConfig):
     seed_everything(cfg.seed)
     n_genes = CONTROLLERS[cfg.controller.name].genome_size(count_actuators(cfg.body), cfg.controller)
 
-    cfg.island_sizes = island_sizes(cfg.target_population_size, cfg.island_sizes)
-    print(f"{cfg.island_sizes = }")
+    # cfg.island_sizes = island_sizes(cfg.target_population_size, cfg.island_sizes)
+    # print(f"{cfg.island_sizes = }")
+    # print(f"{cfg.num_steps = }")
     cfg.island_kwargs = [
         {"fitness_config": replace(cfg.fitness, environments=(env,), weights=None), "target_population_size": size}
         for env, size in zip(cfg.fitness.environments, cfg.island_sizes, strict=True)
     ]
 
     with get_context("spawn").Pool(cfg.workers, initializer=limit_threads) as pool:
-        if cfg.flat_pretrain_gens > 0:
+        if cfg.flat_pretraining > 0:
             pretrain_ea = EA(
                 population=initial_population(cfg, n_genes),
                 operations=ALGORITHMS[cfg.algorithm](cfg, pool),
-                num_steps= cfg.flat_pretrain_gens,
+                num_steps= cfg.flat_pretraining,
                 quiet=cfg.quiet,
                 db_file_path=cfg.db_file_path,
                 db_handling=cfg.db_handling,
@@ -260,8 +261,8 @@ def evolve_islands(cfg: EvolutionConfig):
                 # population=pretrain_ea.population.alive,
                 continue_from=cfg.db_file_path,
                 operations=ALGORITHMS[cfg.algorithm](cfg, pool),
-                num_steps=cfg.num_steps - cfg.flat_pretrain_gens,
-                first_generation_id=cfg.flat_pretrain_gens,
+                num_steps=cfg.num_steps - cfg.flat_pretraining,
+                first_generation_id=cfg.flat_pretraining,
                 quiet=cfg.quiet,
                 db_file_path=cfg.db_file_path,
                 migration_interval=cfg.migration_interval,
@@ -330,7 +331,7 @@ def main():
         islands=True,
         island_sizes=[3, 3, 6],
         num_steps=4,
-        flat_pretrain_gens=2,
+        flat_pretraining=2,
         target_population_size=6,
         fitness=FitnessConfig(environments=[0, 1, 2])
     ))
