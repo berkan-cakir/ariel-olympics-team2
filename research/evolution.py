@@ -236,7 +236,7 @@ def evolve_islands(cfg: EvolutionConfig):
 
     # cfg.island_sizes = island_sizes(cfg.target_population_size, cfg.island_sizes)
     print(f"{cfg.island_sizes = }")
-    # print(f"{cfg.num_steps = }")
+    print(f"{cfg.num_steps = }")
     cfg.island_kwargs = [
         {"fitness_config": replace(cfg.fitness, environments=(env,), weights=None), "target_population_size": size}
         for env, size in zip(cfg.fitness.environments, cfg.island_sizes, strict=True)
@@ -244,15 +244,15 @@ def evolve_islands(cfg: EvolutionConfig):
 
     with get_context("spawn").Pool(cfg.workers, initializer=limit_threads) as pool:
         if cfg.flat_pretraining > 0:
-            pretrain_cfg = cfg.model_copy(update={})
+            pretrain_cfg = cfg.model_copy(update={'fitness': FitnessConfig()})
 
             pretrain_ea = EA(
-                population=initial_population(cfg, n_genes),
-                operations=ALGORITHMS[cfg.algorithm](cfg, pool),
-                num_steps= cfg.flat_pretraining,
-                quiet=cfg.quiet,
-                db_file_path=cfg.db_file_path,
-                db_handling=cfg.db_handling,
+                population=initial_population(pretrain_cfg, n_genes),
+                operations=ALGORITHMS[pretrain_cfg.algorithm](pretrain_cfg, pool),
+                num_steps= pretrain_cfg.flat_pretraining,
+                quiet=pretrain_cfg.quiet,
+                db_file_path=pretrain_cfg.db_file_path,
+                db_handling=pretrain_cfg.db_handling,
             )
 
             pretrain_ea.run()

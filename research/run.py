@@ -68,7 +68,9 @@ def parse_args() -> argparse.Namespace:
     g = p.add_argument_group("experiment")
     g.add_argument("--bodies", nargs="+", default=["gecko"],
                    help="ARIEL prebuilt body names (see fitness.PREBUILT_BODIES) or .py / .json body files")
-    g.add_argument("--environments", type=int, nargs="+", choices=sorted(WORLDS), default=[0])
+    g.add_argument("--environments", type=int, nargs="+", choices=sorted(WORLDS), default=[0],
+                   help="The environments to evaluate on. If using islands, there "
+                   "is one island per environment, informing the required lengths of other island parameters")
     g.add_argument("--weights", type=float, nargs="+", default=None)
     g.add_argument("--aggregate", choices=["mean", "min"], default="mean",
                    help="combine per-environment scores: (weighted) mean or the slowest environment")
@@ -154,6 +156,9 @@ def generations(args: argparse.Namespace, params: dict, island_sizes: list[int])
     g = budget // per_generation
     while g > 1 and g * per_generation + g // params["migration_interval"] * params["migration_size"] * n > budget:
         g -= 1
+
+    # print(f"{g = }")
+    # print(f"{budget = }")
     return max(1, g)
 
 
@@ -163,14 +168,15 @@ def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, fo
         mlp = {"hidden": parse_hidden(params["mlp_hidden"]), "activation": params["mlp_activation"]}
     ea_params = {name: params[name] for name in GA_PARAMS + REVDE_PARAMS + ISLAND_PARAMS if name in params}
     # ea_params['island_sizes'] = [float(s) for s in params["island_sizes"].split(',')]
-    ea_params['island_sizes'] = island_sizes(params['pop_size'], [float(s) for s in params["island_sizes"].split(',')])
-    ea_params['flat_pretraining'] = int(params['flat_pretraining'] * params["pop_size"])
+    if args.islands:
+        ea_params['island_sizes'] = island_sizes(params['pop_size'], [float(s) for s in params["island_sizes"].split(',')])
+        ea_params['flat_pretraining'] = int(params['flat_pretraining'] * params["pop_size"])
 
     return EvolutionConfig(
         body=body,
         controller=BrainConfig(name=params["controller"], **mlp),
         algorithm=params["algorithm"],
-        num_steps=generations(args, params, ea_params['island_sizes']),
+        num_steps=generations(args, params, ea_params.get('island_sizes', [])),
         target_population_size=params["pop_size"],
         islands=args.islands,
         seed=seed,
