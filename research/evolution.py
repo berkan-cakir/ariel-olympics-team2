@@ -236,7 +236,6 @@ def evolve_islands(cfg: EvolutionConfig):
 
     cfg.island_sizes = island_sizes(cfg.target_population_size, cfg.island_sizes)
     print(f"{cfg.island_sizes = }")
-    exit()
     cfg.island_kwargs = [
         {"fitness_config": replace(cfg.fitness, environments=(env,), weights=None), "target_population_size": size}
         for env, size in zip(cfg.fitness.environments, cfg.island_sizes, strict=True)
