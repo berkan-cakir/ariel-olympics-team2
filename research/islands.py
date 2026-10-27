@@ -1,5 +1,9 @@
 from itertools import chain, repeat
+from pathlib import Path
 from typing import Any
+
+from sqlalchemy import create_engine, func
+from sqlmodel import Session, select
 
 from ariel.ec import Individual, Population
 from ariel.ec.ea import EA, EAOperation
@@ -19,6 +23,8 @@ class IslandEA(EA):
             population: Population | None = None,
             operations: list[EAOperation] | None = None,
             *,
+            continue_from: str | Path | None = None,
+            first_generation_id: int | None = None,
             migration_interval: int = 10,
             migration_count: int = 2,
             island_sizes: list[int] = [20, 20, 20],
@@ -31,6 +37,62 @@ class IslandEA(EA):
         self.island_kwargs = island_kwargs
         self.operations = operations or []
 
+        if continue_from is not None:
+            continue_from = Path(continue_from)
+            if not continue_from.exists():
+                raise FileNotFoundError(f"Continue database not found: {continue_from}")
+
+            source_engine = create_engine(f"sqlite:///{continue_from}")
+            with Session(source_engine) as session:
+                continue_gen = session.exec(select(func.max(Individual.time_of_birth))).one()
+
+                # print(f"{continue_gen = }")
+
+                rows = list(
+                    session.exec(
+                        select(Individual)
+                        # .where(Individual.time_of_birth <= continue_gen)
+                        # .where(Individual.time_of_death >= continue_gen)
+                        .where(Individual.alive)
+                        .where(Individual.requires_eval == False)  # noqa: E712
+                    ).all()
+                )
+
+                # print([ind.alive for ind in rows], sep='\n')
+                # exit()
+
+            if not rows:
+                msg = (
+                    f"No evaluated individuals at generation {continue_gen} "
+                    f"in {continue_from}."
+                )
+                raise ValueError(msg)
+
+            population = Population(
+                [
+                    Individual(
+                        alive=True,
+                        time_of_birth=ind.time_of_birth,
+                        time_of_death=-1,
+                        # requires_eval=False,
+                        # fitness_=ind.fitness_,
+                        requires_init=ind.requires_init,
+                        genotype_=ind.genotype_,
+                        tags_=dict(ind.tags_) | {'island': island},
+                    )
+                    for island, ind in zip(chain(*(repeat(i, size) for i, size in enumerate(island_sizes))), rows, strict=True)
+                ]
+            )
+            if first_generation_id is None:
+                # The +1 from EA's restart is a trap, as it skips a generation
+                # (step increments before committing)
+                first_generation_id = continue_gen
+
+            # Somewhat hacky way to avoid the original DB being deleted;
+            # typechecking doesn't like this (it's not one of the allowed literals),
+            # but it doesn't match any of the undesirable options in EA._setup_database
+            kwargs['db_handling'] = 'continue'
+
         if len(island_sizes) != len(island_kwargs):
             raise ValueError(f"Number of islands does not match number of island kwargs dicts {len(island_sizes)} != {len(island_kwargs)}")
 
@@ -38,13 +100,23 @@ class IslandEA(EA):
             if len(population) != sum(island_sizes):
                 raise ValueError(f"Population size ({len(population)}) must match total island size({sum(island_sizes)})")
 
+            # print("assigning islands")
+
             # Assign the appropriate number of individuals to each island
-            for island, individual in zip(chain(*(repeat(i, size) for i, size in enumerate(island_sizes))), population):
-                individual.tags['island'] = island
+            for island, individual in zip(chain(*(repeat(i, size) for i, size in enumerate(island_sizes))), population, strict=True):
+                # individual.tags['island'] = island
+                individual.tags = {'island': island}
 
             self.evaluate(population)
 
-        super().__init__(population=population, operations=operations, **kwargs)
+        # print([ind.tags for ind in population])
+
+        super().__init__(
+            population=population,
+            operations=operations,
+            first_generation_id=first_generation_id,
+            **kwargs
+        )
 
     @property
     def num_islands(self) -> int:

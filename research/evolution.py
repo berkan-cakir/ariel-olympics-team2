@@ -54,6 +54,7 @@ class EvolutionConfig(EASettings):
     seed: int = 0
     workers: int = 1
     fitness: FitnessConfig = Field(default_factory=FitnessConfig)
+    flat_pretrain_gens: int = 0
 
 
 def seed_everything(seed: int) -> None:
@@ -107,12 +108,12 @@ def evaluate(
 @EAOperation
 def parent_selection(population: Population, tournament_size: int, **kwargs) -> Population:
     for ind in population:
-        # ind.tags = {"ps": 0}
-        ind.tags["ps"] = 0
+        ind.tags = {"ps": 0}
+        # ind.tags["ps"] = 0
     for _ in range(population.size // 2 * 2):
         winner = population.sample(tournament_size).best(sort="max")[0]
-        # winner.tags = {"ps": winner.tags["ps"] + 1}
-        winner.tags["ps"] += 1
+        winner.tags = {"ps": winner.tags["ps"] + 1}
+        # winner.tags["ps"] += 1
     return population
 
 
@@ -128,8 +129,8 @@ def crossover(population: Population, rate: float, kind: str, **kwargs) -> Popul
         for genotype in genotypes:
             child = Individual()
             child.genotype = list(genotype)
-            # child.tags = {"mut": True}
-            child.tags["mut"] = True
+            child.tags = {"mut": True}
+            # child.tags["mut"] = True
             population.append(child)
     return population
 
@@ -140,8 +141,8 @@ def mutation(population: Population, rate: float, std: float, **kwargs) -> Popul
         ind.genotype = FloatMutator.gaussian(
             ind.genotype, std=std, mutation_probability=rate, lower_bound=-1.0, upper_bound=1.0
         )
-        # ind.tags = {"mut": False}
-        ind.tags["mut"] = False
+        ind.tags = {"mut": False}
+        # ind.tags["mut"] = False
     return population
 
 
@@ -213,8 +214,16 @@ def evolve(cfg: EvolutionConfig) -> EA:
     return ea
 
 
-def island_sizes(population_size: int, islands: int) -> list[int]:
-    return [population_size // islands + (i < population_size % islands) for i in range(islands)]
+def island_sizes(population_size: int, rel_sizes: list[int]) -> list[int]:
+    num_islands = len(rel_sizes)
+    rel_size_sum = sum(rel_sizes)
+    # return [population_size // num_islands + (i < population_size % num_islands) for i in range(num_islands)]
+    buckets = [int(population_size * s / rel_size_sum) for s in rel_sizes]
+
+    while sum(buckets) < population_size:
+        buckets[max(range(num_islands), key=lambda i: buckets[i])] += 1
+
+    return buckets
 
 
 def offspring(population_size: int, algorithm: str) -> int:
@@ -225,26 +234,56 @@ def evolve_islands(cfg: EvolutionConfig):
     seed_everything(cfg.seed)
     n_genes = CONTROLLERS[cfg.controller.name].genome_size(count_actuators(cfg.body), cfg.controller)
 
-    cfg.island_sizes = island_sizes(cfg.target_population_size, len(cfg.fitness.environments))
+    cfg.island_sizes = island_sizes(cfg.target_population_size, cfg.island_sizes)
+    print(f"{cfg.island_sizes = }")
+    exit()
     cfg.island_kwargs = [
         {"fitness_config": replace(cfg.fitness, environments=(env,), weights=None), "target_population_size": size}
         for env, size in zip(cfg.fitness.environments, cfg.island_sizes, strict=True)
     ]
 
     with get_context("spawn").Pool(cfg.workers, initializer=limit_threads) as pool:
-        ea = IslandEA(
-            population=initial_population(cfg, n_genes),
-            operations=ALGORITHMS[cfg.algorithm](cfg, pool),
-            num_steps=cfg.num_steps,
-            first_generation_id=cfg.first_generation_id,
-            quiet=cfg.quiet,
-            db_file_path=cfg.db_file_path,
-            db_handling=cfg.db_handling,
-            migration_interval=cfg.migration_interval,
-            migration_count=cfg.migration_size,
-            island_kwargs=cfg.island_kwargs,
-            island_sizes=cfg.island_sizes,
-        )
+        if cfg.flat_pretrain_gens > 0:
+            pretrain_ea = EA(
+                population=initial_population(cfg, n_genes),
+                operations=ALGORITHMS[cfg.algorithm](cfg, pool),
+                num_steps= cfg.flat_pretrain_gens,
+                quiet=cfg.quiet,
+                db_file_path=cfg.db_file_path,
+                db_handling=cfg.db_handling,
+            )
+
+            pretrain_ea.run()
+            print("finished pretraining")
+            # print(*(ind.time_of_death for ind in pretrain_ea._fetch()), sep='\n')
+
+            ea = IslandEA(
+                # population=pretrain_ea.population.alive,
+                continue_from=cfg.db_file_path,
+                operations=ALGORITHMS[cfg.algorithm](cfg, pool),
+                num_steps=cfg.num_steps - cfg.flat_pretrain_gens,
+                first_generation_id=cfg.flat_pretrain_gens,
+                quiet=cfg.quiet,
+                db_file_path=cfg.db_file_path,
+                migration_interval=cfg.migration_interval,
+                migration_count=cfg.migration_size,
+                island_kwargs=cfg.island_kwargs,
+                island_sizes=cfg.island_sizes,
+            )
+        else:
+            ea = IslandEA(
+                population=initial_population(cfg, n_genes),
+                operations=ALGORITHMS[cfg.algorithm](cfg, pool),
+                num_steps=cfg.num_steps,
+                first_generation_id=cfg.first_generation_id,
+                quiet=cfg.quiet,
+                db_file_path=cfg.db_file_path,
+                db_handling=cfg.db_handling,
+                migration_interval=cfg.migration_interval,
+                migration_count=cfg.migration_size,
+                island_kwargs=cfg.island_kwargs,
+                island_sizes=cfg.island_sizes,
+            )
         (cfg.output_folder / "config.json").write_text(cfg.model_dump_json(indent=2))
         ea.run()
         score_elites(ea, cfg, pool)
@@ -290,8 +329,11 @@ def diversity(population: Population) -> float:
 def main():
     evolve_islands(EvolutionConfig(
         islands=True,
-        island_sizes=[5, 5, 5],
-        num_steps=5,
+        island_sizes=[3, 3, 6],
+        num_steps=4,
+        flat_pretrain_gens=2,
+        target_population_size=6,
+        fitness=FitnessConfig(environments=[0, 1, 2])
     ))
 
 
