@@ -153,8 +153,14 @@ def generations(args: argparse.Namespace, params: dict, island_sizes: list[int])
     n = len(args.environments)
     per_generation = sum(offspring(size, params["algorithm"]) for size in island_sizes)
     budget = args.evaluations * n - pop - (pop + FINAL_ELITES * n) * n
+
+    def cost(g: int) -> int:
+        flat = int(params["flat_pretraining"] * g)
+        migrations = g // params["migration_interval"] - flat // params["migration_interval"]
+        return flat * offspring(pop, params["algorithm"]) + (g - flat) * per_generation + migrations * params["migration_size"] * n + (pop if flat else 0)
+
     g = budget // per_generation
-    while g > 1 and g * per_generation + g // params["migration_interval"] * params["migration_size"] * n > budget:
+    while g > 1 and cost(g) > budget:
         g -= 1
 
     # print(f"{g = }")
@@ -170,7 +176,7 @@ def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, fo
     # ea_params['island_sizes'] = [float(s) for s in params["island_sizes"].split(',')]
     if args.islands:
         ea_params['island_sizes'] = island_sizes(params['pop_size'], [float(s) for s in params["island_sizes"].split(',')])
-        ea_params['flat_pretraining'] = int(params['flat_pretraining'] * params["pop_size"])
+        ea_params['flat_pretraining'] = int(params['flat_pretraining'] * generations(args, params, ea_params['island_sizes']))
 
     return EvolutionConfig(
         body=body,

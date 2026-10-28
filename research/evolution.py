@@ -247,7 +247,7 @@ def evolve_islands(cfg: EvolutionConfig):
             pretrain_cfg = cfg.model_copy(update={'fitness': FitnessConfig()})
 
             pretrain_ea = EA(
-                population=initial_population(pretrain_cfg, n_genes),
+                population=evaluate(body=cfg.body, controller=cfg.controller, fitness_config=pretrain_cfg.fitness, pool=pool)(initial_population(pretrain_cfg, n_genes)),
                 operations=ALGORITHMS[pretrain_cfg.algorithm](pretrain_cfg, pool),
                 num_steps= pretrain_cfg.flat_pretraining,
                 quiet=pretrain_cfg.quiet,
