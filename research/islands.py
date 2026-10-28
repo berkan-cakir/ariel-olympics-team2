@@ -45,7 +45,10 @@ class IslandEA(EA):
             with Session(source_engine) as session:
                 continue_gen = session.exec(select(func.max(Individual.time_of_birth))).one()
 
-                pretrained = Population(session.exec(select(Individual).where(Individual.alive).where(Individual.requires_eval == False)).all())
+                pretrained = Population(session.exec(select(Individual)
+                                                     .where(Individual.alive)
+                                                     .where(Individual.requires_eval == False)
+                                                    ).all())
 
                 population = Population([])
                 for individual in pretrained.shuffle():
