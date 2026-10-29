@@ -55,6 +55,7 @@ TRACK_WIDTH = 1.5
 MAT_THICKNESS = 0.003
 MAT_GRASS_GAP = 0.004
 GRASS_THICKNESS = 0.001
+TRACK_HEADING_DEGREES = -90.0
 SLOPE_DEGREES = 10.0  # incline of the carpet funnel around the start
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
@@ -219,19 +220,20 @@ def grass_slope() -> BaseWorld:
     return surface(carpet_slope(), GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
 
 
-def slab(world: BaseWorld, name: str, heightmap: np.ndarray, size: list[float], pos: list[float], friction: float, rgba: tuple[float, float, float, float]) -> None:
+def slab(world: BaseWorld, name: str, heightmap: np.ndarray, size: list[float], along: float, height: float, friction: float, rgba: tuple[float, float, float, float]) -> None:
+    heading = np.radians(TRACK_HEADING_DEGREES)
     world.spec.add_hfield(name=name, size=size, nrow=heightmap.shape[0], ncol=heightmap.shape[1], userdata=heightmap.flatten().tolist())
-    geom = world.spec.worldbody.add_geom(name=name, type=mj.mjtGeom.mjGEOM_HFIELD, hfieldname=name, pos=pos, priority=1, rgba=rgba)
+    geom = world.spec.worldbody.add_geom(name=name, type=mj.mjtGeom.mjGEOM_HFIELD, hfieldname=name, pos=[along * np.cos(heading), along * np.sin(heading), height], quat=[np.cos(heading / 2), 0, 0, np.sin(heading / 2)], priority=1, rgba=rgba)
     geom.friction = [friction, *geom.friction[1:]]
 
 
 def track() -> BaseWorld:
     world = surface(SimpleFlatWorld(), LINOLEUM_FRICTION, (0.78, 0.74, 0.62, 1.0))
     mat = bumps()[: round(TRACK_LENGTH / BUMP_CELL) + 1, : round(TRACK_WIDTH / BUMP_CELL) + 1].T
-    slab(world, "mat", mat, [TRACK_LENGTH / 2, TRACK_WIDTH / 2, mat.max(), MAT_THICKNESS], [TRACK_LENGTH / 2, 0, MAT_THICKNESS], SILICONE_FRICTION, (0.15, 0.15, 0.16, 1.0))
+    slab(world, "mat", mat, [TRACK_LENGTH / 2, TRACK_WIDTH / 2, mat.max(), MAT_THICKNESS], TRACK_LENGTH / 2, MAT_THICKNESS, SILICONE_FRICTION, (0.15, 0.15, 0.16, 1.0))
     rise = TRACK_LENGTH * np.tan(np.radians(SLOPE_DEGREES))
     ramp = np.array([[0.0, 0.0, 1.0, 1.0]] * 2)
-    slab(world, "grass", ramp, [1.5 * TRACK_LENGTH, TRACK_WIDTH / 2, rise, GRASS_THICKNESS], [2.5 * TRACK_LENGTH + MAT_GRASS_GAP, 0, GRASS_THICKNESS], GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
+    slab(world, "grass", ramp, [1.5 * TRACK_LENGTH, TRACK_WIDTH / 2, rise, GRASS_THICKNESS], 2.5 * TRACK_LENGTH + MAT_GRASS_GAP, GRASS_THICKNESS, GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
     return world
 
 
@@ -310,11 +312,25 @@ def race_end(distance: np.ndarray) -> int:
 
 
 def race_speed(path: np.ndarray) -> float:
+    return speed(xy_displacement(path[0], path.T))
+
+
+def track_speed(path: np.ndarray) -> float:
+    heading = np.radians(TRACK_HEADING_DEGREES)
+    along = path[:, :2] @ np.array([np.cos(heading), np.sin(heading)])
+    across = path[:, :2] @ np.array([-np.sin(heading), np.cos(heading)])
+    progress = np.maximum(along - along[0], 0)
+    fall = np.flatnonzero(np.abs(across) > TRACK_WIDTH / 2)
+    if fall.size:
+        progress[fall[0]:] = progress[fall[0]]
+    return speed(progress)
+
+
+def speed(distance: np.ndarray) -> float:
     # Average speed over the race: GOAL / finish time for a finisher, else furthest distance / race time.
     # Both are GOAL / race time at the finish line, so every finisher beats every non-finisher.
-    distance = xy_displacement(path[0], path.T)
     if distance.max() < GOAL:
-        return float(distance.max() / ((len(path) - 1) * TIMESTEP))
+        return float(distance.max() / ((len(distance) - 1) * TIMESTEP))
     step = race_end(distance)
     before, after = distance[step - 1], distance[step]
     return float(GOAL / ((step - 1 + (GOAL - before) / (after - before)) * TIMESTEP))
@@ -332,7 +348,9 @@ def lateral_drift(path: np.ndarray) -> float:
     return float(np.abs(xy[: end + 1] @ np.array([-heading[1], heading[0]])).mean())
 
 
-def score(path: np.ndarray, lateral_penalty: float) -> float:
+def score(path: np.ndarray, lateral_penalty: float, env_id: int = 0) -> float:
+    if WORLDS[env_id] is track:
+        return track_speed(path)
     # Floored at 0, the score of an unstable simulation, so drifting is never worse than blowing up
     return max(0.0, race_speed(path) - lateral_penalty * lateral_drift(path))
 
@@ -344,7 +362,7 @@ def fitness(genotype: np.ndarray, body: str, controller: BrainConfig, cfg: Fitne
         robot = load_body(body)
         brain = brain_type(genotype, len(robot.spec.actuators), CONTROL_STEPS * TIMESTEP, controller)
         path = simulate(brain, robot, env_id)
-        scores.append(0.0 if path is None else score(path, cfg.lateral_penalty))
+        scores.append(0.0 if path is None else score(path, cfg.lateral_penalty, env_id))
     return AGGREGATES[cfg.aggregate](scores, cfg.weights)
 
 
