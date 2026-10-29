@@ -50,6 +50,11 @@ BUMP_ROW = 0.04
 BUMP_GAP = 0.006
 BUMP_CELL = 0.004
 BUMP_FLOOR = 7.0
+TRACK_LENGTH = 1.0
+TRACK_WIDTH = 1.5
+MAT_THICKNESS = 0.003
+MAT_GRASS_GAP = 0.004
+GRASS_THICKNESS = 0.001
 SLOPE_DEGREES = 10.0  # incline of the carpet funnel around the start
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
@@ -214,6 +219,22 @@ def grass_slope() -> BaseWorld:
     return surface(carpet_slope(), GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
 
 
+def slab(world: BaseWorld, name: str, heightmap: np.ndarray, size: list[float], pos: list[float], friction: float, rgba: tuple[float, float, float, float]) -> None:
+    world.spec.add_hfield(name=name, size=size, nrow=heightmap.shape[0], ncol=heightmap.shape[1], userdata=heightmap.flatten().tolist())
+    geom = world.spec.worldbody.add_geom(name=name, type=mj.mjtGeom.mjGEOM_HFIELD, hfieldname=name, pos=pos, priority=1, rgba=rgba)
+    geom.friction = [friction, *geom.friction[1:]]
+
+
+def track() -> BaseWorld:
+    world = surface(SimpleFlatWorld(), LINOLEUM_FRICTION, (0.78, 0.74, 0.62, 1.0))
+    mat = bumps()[: round(TRACK_LENGTH / BUMP_CELL) + 1, : round(TRACK_WIDTH / BUMP_CELL) + 1].T
+    slab(world, "mat", mat, [TRACK_LENGTH / 2, TRACK_WIDTH / 2, mat.max(), MAT_THICKNESS], [TRACK_LENGTH / 2, 0, MAT_THICKNESS], SILICONE_FRICTION, (0.15, 0.15, 0.16, 1.0))
+    rise = TRACK_LENGTH * np.tan(np.radians(SLOPE_DEGREES))
+    ramp = np.array([[0.0, 0.0, 1.0, 1.0]] * 2)
+    slab(world, "grass", ramp, [1.5 * TRACK_LENGTH, TRACK_WIDTH / 2, rise, GRASS_THICKNESS], [2.5 * TRACK_LENGTH + MAT_GRASS_GAP, 0, GRASS_THICKNESS], GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
+    return world
+
+
 WORLDS: dict[int, Callable[[], BaseWorld]] = {
     0: SimpleFlatWorld,
     1: rugged,
@@ -225,6 +246,7 @@ WORLDS: dict[int, Callable[[], BaseWorld]] = {
     7: grass,
     8: silicone_bumps,
     9: grass_slope,
+    10: track,
 }
 
 
