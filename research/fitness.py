@@ -39,6 +39,17 @@ TERRAIN_DIMS = (100, 100)
 RUGGED_HEIGHT = 0.1  # m between the lowest and highest point of the rugged terrain (ARIEL's default is 0.5)
 LINOLEUM_FRICTION = 0.3  # sliding friction of the slippery floor; every other surface keeps MuJoCo's default of 1
 CARPET_FRICTION = 1.5
+GRASS_SLIDE_DEGREES = 6.0
+SCREEN_GLASS_FRICTION = 0.03 # TODO better measurements!!!!
+PRINTED_PLASTIC_FRICTION = 0.35
+SILICONE_RUBBER_FRICTION = 1.0
+GRASS_FRICTION = float(np.tan(np.radians(GRASS_SLIDE_DEGREES)) * np.sqrt(PRINTED_PLASTIC_FRICTION / SCREEN_GLASS_FRICTION))
+SILICONE_FRICTION = float(np.sqrt(PRINTED_PLASTIC_FRICTION * SILICONE_RUBBER_FRICTION))
+BUMP_TYPES = ((0.02, 0.005), (0.025, 0.007), (0.03, 0.009))
+BUMP_ROW = 0.04
+BUMP_GAP = 0.006
+BUMP_CELL = 0.004
+BUMP_FLOOR = 7.0
 SLOPE_DEGREES = 10.0  # incline of the carpet funnel around the start
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
@@ -163,6 +174,46 @@ def carpet_slope() -> BaseWorld:
     return surface(terrain("carpet-slope-world", 2 * rise, funnel), CARPET_FRICTION, (0.45, 0.12, 0.14, 1.0))
 
 
+def grass() -> BaseWorld:
+    return surface(SimpleFlatWorld(), GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
+
+
+def pyramid(side: float, height: float, angle: float) -> np.ndarray:
+    reach = int(np.ceil(side / np.sqrt(3) / BUMP_CELL))
+    offsets = np.arange(-reach, reach + 1) * BUMP_CELL
+    normals = angle + 2 * np.pi * np.arange(3) / 3
+    distance = np.max(offsets[None, :, None] * np.cos(normals) + offsets[:, None, None] * np.sin(normals), axis=2)
+    return height * np.clip(1 - 2 * np.sqrt(3) * distance / side, 0, None)
+
+
+@cache
+def bumps() -> np.ndarray:
+    rng = np.random.default_rng(TERRAIN_SEED)
+    n = round(BUMP_FLOOR / BUMP_CELL) + 1
+    heightmap = np.zeros((n, n))
+    for y in range(round(BUMP_ROW / 2 / BUMP_CELL), n, round(BUMP_ROW / BUMP_CELL)):
+        x = -rng.uniform(0, BUMP_ROW)
+        while x < BUMP_FLOOR:
+            side, height = BUMP_TYPES[rng.integers(len(BUMP_TYPES))]
+            bump = pyramid(side, height, rng.uniform(0, 2 * np.pi))
+            r, c = len(bump) // 2, round((x + side / 2) / BUMP_CELL)
+            if r <= c < n - r and y < n - r:
+                rows, cols = slice(y - r, y + r + 1), slice(c - r, c + r + 1)
+                heightmap[rows, cols] = np.maximum(heightmap[rows, cols], bump)
+            x += side + BUMP_GAP
+    return heightmap
+
+
+def silicone_bumps() -> BaseWorld:
+    heightmap = bumps()
+    world = CompoundWorld(name="silicone-bumps-world", floor_size=(BUMP_FLOOR, BUMP_FLOOR, 2 * heightmap.max()), floor_heightmap=heightmap, checker_floor=False)
+    return surface(world, SILICONE_FRICTION, (0.15, 0.15, 0.16, 1.0))
+
+
+def grass_slope() -> BaseWorld:
+    return surface(carpet_slope(), GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
+
+
 WORLDS: dict[int, Callable[[], BaseWorld]] = {
     0: SimpleFlatWorld,
     1: rugged,
@@ -171,6 +222,9 @@ WORLDS: dict[int, Callable[[], BaseWorld]] = {
     4: linoleum,
     5: carpet,
     6: carpet_slope,
+    7: grass,
+    8: silicone_bumps,
+    9: grass_slope,
 }
 
 
