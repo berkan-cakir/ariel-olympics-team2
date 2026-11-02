@@ -15,7 +15,17 @@ from matplotlib.ticker import MaxNLocator
 from rich.console import Console
 
 from controller import BrainConfig, parse_hidden
-from evolution import EvolutionConfig, diversity, evolve, evolve_islands, fitness_stats
+from evolution import (
+    FINAL_ELITES,
+    EvolutionConfig,
+    best_fitness,
+    diversity,
+    evolve,
+    evolve_islands,
+    fitness_stats,
+    island_sizes,
+    offspring,
+)
 from fitness import LATERAL_PENALTY, WORLDS, FitnessConfig
 
 HERE = Path(__file__).resolve().parent
@@ -31,7 +41,7 @@ GA_PARAMS = (
     "survivor_tournament_size",
 )
 REVDE_PARAMS = ("revde_scaling_factor",)
-ISLAND_PARAMS = ("migration_interval", "migration_size")
+ISLAND_PARAMS = ("migration_interval", "migration_size", "flat_pretraining", "island_sizes")
 
 SURFACE, TEXT, TEXT_MUTED, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 BLUE, ORANGE = "#2a78d6", "#eb6834"
@@ -54,10 +64,13 @@ plt.rcParams.update({
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
+
     g = p.add_argument_group("experiment")
     g.add_argument("--bodies", nargs="+", default=["gecko"],
                    help="ARIEL prebuilt body names (see fitness.PREBUILT_BODIES) or .py / .json body files")
-    g.add_argument("--environments", type=int, nargs="+", choices=sorted(WORLDS), default=[0])
+    g.add_argument("--environments", type=int, nargs="+", choices=sorted(WORLDS), default=[0],
+                   help="The environments to evaluate on. If using islands, there "
+                   "is one island per environment, informing the required lengths of other island parameters")
     g.add_argument("--weights", type=float, nargs="+", default=None)
     g.add_argument("--aggregate", choices=["mean", "min"], default="mean",
                    help="combine per-environment scores: (weighted) mean or the slowest environment")
@@ -93,6 +106,10 @@ def parse_args() -> argparse.Namespace:
     g.add_argument("--revde-scaling-factor", type=float, nargs="+", default=[0.5])
     g.add_argument("--migration-interval", type=int, nargs="+", default=[10])
     g.add_argument("--migration-size", type=int, nargs="+", default=[2])
+    g.add_argument("--flat-pretraining", type=float, nargs='+', default=[0.0],
+                   help="Portion of the budget (rounded down to whole generations) to use for pre-training on SimpleFlatWorld, as a float between 0.0 and 1.0 (default=0.0)")
+    g.add_argument('--island-sizes', nargs='+', default=['1,1,1'], help="relative sizes of islands, comma-separated per island configuration, e.g. 1,1,1 1,2,1 1,2,3 (default=1,1,1)")
+
     return p.parse_args()
 
 
@@ -127,12 +144,28 @@ def suggest_params(trial: optuna.Trial, args: argparse.Namespace) -> dict:
     return params
 
 
-def generations(args: argparse.Namespace, params: dict) -> int:
+def generations(args: argparse.Namespace, params: dict, island_sizes: list[int]) -> int:
     if args.evaluations is None:
         return args.generations
     pop = params["pop_size"]
-    offspring = pop // 3 * 3 if params["algorithm"] == "revde" else pop // 2 * 2
-    return max(1, (args.evaluations - pop) // offspring)
+    if not args.islands:
+        return max(1, (args.evaluations - pop) // offspring(pop, params["algorithm"]))
+    n = len(args.environments)
+    per_generation = sum(offspring(size, params["algorithm"]) for size in island_sizes)
+    budget = args.evaluations * n - pop - (pop + FINAL_ELITES * n) * n
+
+    def cost(g: int) -> int:
+        flat = int(params["flat_pretraining"] * g)
+        migrations = g // params["migration_interval"] - flat // params["migration_interval"]
+        return flat * offspring(pop, params["algorithm"]) + (g - flat) * per_generation + migrations * params["migration_size"] * n + (pop if flat else 0)
+
+    g = budget // per_generation
+    while g > 1 and cost(g) > budget:
+        g -= 1
+
+    # print(f"{g = }")
+    # print(f"{budget = }")
+    return max(1, g)
 
 
 def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, folder: Path) -> EvolutionConfig:
@@ -140,25 +173,31 @@ def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, fo
     if params["controller"] in MLP_CONTROLLERS:
         mlp = {"hidden": parse_hidden(params["mlp_hidden"]), "activation": params["mlp_activation"]}
     ea_params = {name: params[name] for name in GA_PARAMS + REVDE_PARAMS + ISLAND_PARAMS if name in params}
+    # ea_params['island_sizes'] = [float(s) for s in params["island_sizes"].split(',')]
+    if args.islands:
+        ea_params['island_sizes'] = island_sizes(params['pop_size'], [float(s) for s in params["island_sizes"].split(',')])
+        ea_params['flat_pretraining'] = int(params['flat_pretraining'] * generations(args, params, ea_params['island_sizes']))
+
     return EvolutionConfig(
         body=body,
         controller=BrainConfig(name=params["controller"], **mlp),
         algorithm=params["algorithm"],
-        num_steps=generations(args, params),
+        num_steps=generations(args, params, ea_params.get('island_sizes', [])),
         target_population_size=params["pop_size"],
         islands=args.islands,
         seed=seed,
         workers=args.workers,
         fitness=fitness_config(args),
         output_folder=folder,
+        # flat_pretraining=int(params['flat_pretraining'] * params["pop_size"]),
+        # island_sizes=[float(s) for s in params["island_sizes"].split(',')],
         **ea_params,
     )
 
 
 def run_one(cfg: EvolutionConfig) -> float:
     start = time.perf_counter()
-    ea = evolve_islands(cfg) if cfg.islands else evolve(cfg)
-    best = ea.get_solution("best", only_alive=False).fitness
+    best = best_fitness(evolve_islands(cfg) if cfg.islands else evolve(cfg))
     console.log(f"seed {cfg.seed}: best fitness {best:.4f} in {time.perf_counter() - start:.0f} s, saved to {cfg.output_folder}")
     return best
 

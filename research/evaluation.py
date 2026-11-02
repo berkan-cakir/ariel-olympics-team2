@@ -10,9 +10,10 @@ from ariel.utils.tracker import Tracker
 from ariel.utils.video_recorder import VideoRecorder
 from mujoco import viewer
 from rich.console import Console
+from sqlmodel import create_engine
 
 from controller import CONTROLLERS
-from evolution import EvolutionConfig
+from evolution import EvolutionConfig, best_combined
 from fitness import CONTROL_STEPS, GOAL, TIME_LIMIT, TIMESTEP, WORLDS, FitnessConfig, build_scene, fitness, load_body
 
 console = Console()
@@ -39,8 +40,9 @@ def load_checkpoint(path: Path) -> tuple[EvolutionConfig, Individual]:
     settings = json.loads((db.parent / "config.json").read_text())
     settings.pop("db_file_path")  # computed from output_folder, not a setting
     cfg = EvolutionConfig.model_validate(settings)
-    best = Archive(db).best_individual("max" if cfg.is_maximisation else "min")
-    return cfg, best
+    if not cfg.islands:
+        return cfg, Archive(db).best_individual("max" if cfg.is_maximisation else "min")
+    return cfg, best_combined(create_engine(f"sqlite:///{db}"))
 
 
 def build_simulation(cfg: EvolutionConfig, genotype: np.ndarray, env_id: int) -> tuple[mj.MjModel, mj.MjData]:
@@ -94,8 +96,9 @@ def main() -> None:
     args = parse_args()
     cfg, best = load_checkpoint(args.checkpoint)
     genotype = np.asarray(best.genotype)
+    value = best.tags["combined"] if cfg.islands else best.fitness
     console.log(f"{cfg.body}, {cfg.controller}, {cfg.algorithm}: best individual born in generation "
-                f"{best.time_of_birth}, fitness {best.fitness:.4f}")
+                f"{best.time_of_birth}, fitness {value:.4f}")
 
     environments = tuple(args.environments or cfg.fitness.environments)
     for env_id in environments:
