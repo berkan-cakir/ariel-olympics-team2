@@ -1,6 +1,7 @@
+from abc import ABC, abstractmethod
 from itertools import chain, repeat
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, Literal
 
 from sqlalchemy import create_engine, func
 from sqlmodel import Session, select
@@ -178,3 +179,154 @@ class IslandEA(EA):
                 progress.advance(task)
 
         self.console.rule("[green]EA Finished")
+
+
+class MigrationPattern(ABC):
+    """
+    Abstract base class to represent migration logic for island-based evolution.
+
+    Used by wrapping an instance's `emigrate` and `immigrate` functions with
+    `EAOperation` and calling those in order. All islands must call `emigrate`
+    before any call `immigrate` to guarantee correctness.
+
+    Parameters
+    ----------
+    migration_interval : int
+        The number of generations between migration events. Specifically,
+        migration occurs when the `current_generation` argument passed to the
+        `*migrate` functions divisible by `migration_interval`.
+    migration_size : int
+        Normally, this is the number of individuals that migrate along **each**
+        migration path, meaning the number of individuals leaving from and arriving
+        to an island is an integer multiple of this number. Subclasses are free
+        to interpret this number differently.
+    keep_original : bool, optional
+        Whether a migrating individual is also kept alive on its original island.
+        Default is `False`
+    selection_mode : {"worst", "random"}, optional
+        How to select the migrants leaving an island:
+        - `best`: Select the `n` fittest individuals.
+        - `random`: Select `n` random individuals.
+
+        Default is `best`.
+    replacement_mode : {"worst", "random"}, optional
+        How to select which individuals are killed to make room for immigrants:
+        - `worst`: Select the `n` individuals with the lowest fitness.
+        - `random`: Select `n` random individuals.
+
+        If `keep_original` is set to `False`, this parameter is ignored, as
+        immigrants simple replace emigrants.
+        Default is `worst`
+    """
+    def __init__(
+            self,
+            migration_interval: int,
+            migration_size: int,
+            num_islands: int,
+            keep_original: bool = False,
+            selection_mode: Literal['best', 'random'] = 'best',
+            replacement_mode: Literal['worst', 'random'] = 'worst',
+    ) -> None:
+        self.migration_interval = migration_interval
+        self._migration_size = migration_size
+        self.keep_original = keep_original
+        self.selection_mode = selection_mode
+        self.replacement_mode = replacement_mode
+        self.num_islands = num_islands
+
+        self.immigration_queues = [Population([]) for _ in range(num_islands)]
+
+    def num_migrants(self, island: int) -> int:
+        return self._migration_size
+
+    @abstractmethod
+    def migration_targets(self, source: int) -> Iterator[int]:
+        raise NotImplementedError()
+
+    def get_emigrants(self, population: Population, num: int) -> Population:
+        match self.selection_mode:
+            case "best": result = population.alive.best(n=num).shuffle()
+            case "random": result = population.alive.shuffle()[:num]
+            case _: raise ValueError("Invalid migration selection mode")
+
+        if len(result) < num:
+            raise ValueError("Island population too small for emigration")
+
+        return result
+
+    def _emigrate(self, population: Population, island: int, **kwargs) -> Population:
+        total_size = self.num_migrants(island)
+        migrants = self.get_emigrants(population, total_size)
+
+        for ind, target in zip(migrants, self.migration_targets(island), strict=True):
+            ind.alive = self.keep_original
+            self.immigration_queues[island].append(Individual(
+                genotype_=ind.genotype,
+                tags_=ind.tags | {'island': target},
+            ))
+
+        return population
+
+    def _immigrate(self, population: Population, island: int, **kwargs) -> Population:
+        match (self.keep_original, self.replacement_mode):
+            case (False, _): to_kill = Population.empty()
+            case (_, "worst"): to_kill = population.alive.best(sort='min', n=self.num_migrants(island))
+            case (_, "random"): to_kill = population.alive.sample(n=self.num_migrants(island))
+            case _: raise ValueError("Invalid migration replacement mode")
+
+        for ind in to_kill:
+            ind.alive = False
+
+        population.extend(self.immigration_queues[island])
+        # Clear population for next cycle
+        self.immigration_queues[island] = Population.empty()
+
+        return population
+
+    def emigrate(self, population: Population, island: int, current_generation: int, **kwargs) -> Population:
+        if current_generation % self.migration_interval != 0:
+            return population
+
+        return self._emigrate(population, island, **kwargs)
+
+    def immigrate(self, population: Population, current_generation: int, island: int, **kwargs) -> Population:
+        if current_generation % self.migration_interval != 0:
+            return population
+
+        return self._immigrate(population, island, **kwargs)
+
+
+class NoMigration(MigrationPattern):
+    """
+    Dummy migration pattern so we don't need to change the list of operators for no-island EA.
+    """
+    def num_migrants(self, island: int) -> int:
+        return 0
+
+    def migration_targets(self, source: int) -> Iterator[int]:
+        return
+        yield  # Incredibly hacky way to tell Python this is a generator so typechecking stops complaining
+
+class SingleRingMigration(MigrationPattern):
+    def migration_targets(self, source: int) -> Iterator[int]:
+        yield from repeat((source + 1) % self.num_islands, self._migration_size)
+
+class DoubleRingMigration(MigrationPattern):
+    def migration_targets(self, source: int) -> Iterator[int]:
+        yield from repeat((source + 1) % self.num_islands, self._migration_size)
+        yield from repeat((source - 1) % self.num_islands, self._migration_size)
+
+class All2AllMigration(MigrationPattern):
+    def migration_targets(self, source: int) -> Iterator[int]:
+        for target in range(self.num_islands):
+            if target == source: continue
+
+            yield from repeat(target, self._migration_size)
+
+class StarMigration(MigrationPattern):
+    def migration_targets(self, source: int) -> Iterator[int]:
+        if source == 0:
+            for target in range(1, self.num_islands):
+                yield from repeat(target, self._migration_size)
+        else:
+            yield from repeat(0, self._migration_size)
