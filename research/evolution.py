@@ -28,7 +28,7 @@ from sqlmodel import Session, select
 
 from controller import CONTROLLERS, BrainConfig
 from fitness import FitnessConfig, fitness, load_body
-from islands import IslandEA
+from islands import IslandEA, MigrationPattern, NoMigration, SimThreshold
 
 FINAL_ELITES = 10
 
@@ -55,6 +55,11 @@ class EvolutionConfig(EASettings):
     workers: int = 1
     fitness: FitnessConfig = Field(default_factory=FitnessConfig)
     flat_pretraining: int = 0
+    island_topology: Literal["single_ring", "double_ring", "all2all", "star", "no_migration"]
+    max_evaluations: SimThreshold = Field(default_factory=SimThreshold)
+    migration_keep_original: bool = False
+    migration_selection: str = 'best'
+    migration_replacement_selection: str = 'worst'
 
 
 def seed_everything(seed: int) -> None:
@@ -96,10 +101,19 @@ def evaluate(
     fitness_config: FitnessConfig,
     pool: Pool,
     island_configs: list[FitnessConfig] | None = None,
+    sim_threshold: SimThreshold | None = None,
     **kwargs,
 ) -> Population:
     todo = population.unevaluated
     jobs = [(np.asarray(ind.genotype), island_configs[ind.tags["island"]] if island_configs else fitness_config) for ind in todo]
+
+    # Count total simulation runs
+    if sim_threshold is not None:
+        sim_threshold.total_sims += sum(len(cfg.environments) for _, cfg in jobs)
+        # print(f"{sim_threshold.total_sims = } / {sim_threshold.max_sims}")
+        if sim_threshold.threshold_exceeded():
+            return population
+
     for ind, value in zip(todo, pool.imap(partial(score, body=body, controller=controller), jobs, chunksize=1), strict=True):
         ind.fitness = value
     return population
@@ -175,20 +189,53 @@ def truncation_selection(population: Population, target_population_size: int, **
 
 
 def ga(cfg: EvolutionConfig, pool: Pool) -> list[EAOperation]:
+    if cfg.islands:
+        topo = MigrationPattern.get_by_name(cfg.island_topology)
+    else:
+        topo = NoMigration
+
+    topo = topo(
+        cfg.migration_interval,
+        cfg.migration_size,
+        cfg.island_sizes,
+        cfg.migration_keep_original,
+        cfg.migration_selection,
+        cfg.migration_replacement_selection,
+    )
+
     return [
         parent_selection(tournament_size=cfg.parent_tournament_size),
         crossover(rate=cfg.crossover_rate, kind=cfg.crossover_kind),
         mutation(rate=cfg.mutation_rate, std=cfg.mutation_std),
-        evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool),
+        evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool, sim_threshold=cfg.max_evaluations),
         survivor_selection(target_population_size=cfg.target_population_size, tournament_size=cfg.survivor_tournament_size),
+        EAOperation(topo.emigrate),
+        EAOperation(topo.immigrate),
+        evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool, sim_threshold=cfg.max_evaluations),  # Re-evaluate migrants
     ]
 
 
 def revde(cfg: EvolutionConfig, pool: Pool) -> list[EAOperation]:
+    if cfg.islands:
+        topo = MigrationPattern.get_by_name(cfg.island_topology)
+    else:
+        topo = NoMigration
+
+    topo = topo(
+        cfg.migration_interval,
+        cfg.migration_size,
+        cfg.island_sizes,
+        cfg.migration_keep_original,
+        cfg.migration_selection,
+        cfg.migration_replacement_selection,
+    )
     return [
         revde_variation(scaling_factor=cfg.revde_scaling_factor),
-        evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool),
+        evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool, sim_threshold=cfg.max_evaluations),
         truncation_selection(target_population_size=cfg.target_population_size),
+        EAOperation(topo.emigrate),
+        EAOperation(topo.immigrate),
+        evaluate(body=cfg.body, controller=cfg.controller, fitness_config=cfg.fitness, pool=pool, sim_threshold=cfg.max_evaluations),  # Re-evaluate migrants
     ]
 
 
@@ -237,6 +284,7 @@ def evolve_islands(cfg: EvolutionConfig):
     # cfg.island_sizes = island_sizes(cfg.target_population_size, cfg.island_sizes)
     print(f"{cfg.island_sizes = }")
     print(f"{cfg.num_steps = }")
+    print(F"{cfg.max_evaluations.max_sims = }")
     cfg.island_kwargs = [
         {"fitness_config": replace(cfg.fitness, environments=(env,), weights=None), "target_population_size": size}
         for env, size in zip(cfg.fitness.environments, cfg.island_sizes, strict=True)
@@ -271,6 +319,7 @@ def evolve_islands(cfg: EvolutionConfig):
                 migration_count=cfg.migration_size,
                 island_kwargs=cfg.island_kwargs,
                 island_sizes=cfg.island_sizes,
+                termination_condition=cfg.max_evaluations.threshold_exceeded
             )
         else:
             ea = IslandEA(
@@ -285,6 +334,7 @@ def evolve_islands(cfg: EvolutionConfig):
                 migration_count=cfg.migration_size,
                 island_kwargs=cfg.island_kwargs,
                 island_sizes=cfg.island_sizes,
+                termination_condition=cfg.max_evaluations.threshold_exceeded
             )
         (cfg.output_folder / "config.json").write_text(cfg.model_dump_json(indent=2))
         ea.run()

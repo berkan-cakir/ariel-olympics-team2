@@ -27,6 +27,7 @@ from evolution import (
     offspring,
 )
 from fitness import LATERAL_PENALTY, WORLDS, FitnessConfig
+from islands import SimThreshold
 
 HERE = Path(__file__).resolve().parent
 console = Console()
@@ -41,7 +42,7 @@ GA_PARAMS = (
     "survivor_tournament_size",
 )
 REVDE_PARAMS = ("revde_scaling_factor",)
-ISLAND_PARAMS = ("migration_interval", "migration_size", "flat_pretraining", "island_sizes")
+ISLAND_PARAMS = ("migration_interval", "migration_size", "flat_pretraining", "island_sizes", "island_topology", "migration_keep_original", "migration_selection", "migration_replacement_selection")
 
 SURFACE, TEXT, TEXT_MUTED, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 BLUE, ORANGE = "#2a78d6", "#eb6834"
@@ -109,6 +110,10 @@ def parse_args() -> argparse.Namespace:
     g.add_argument("--flat-pretraining", type=float, nargs='+', default=[0.0],
                    help="Portion of the budget (rounded down to whole generations) to use for pre-training on SimpleFlatWorld, as a float between 0.0 and 1.0 (default=0.0)")
     g.add_argument('--island-sizes', nargs='+', default=['1,1,1'], help="relative sizes of islands, comma-separated per island configuration, e.g. 1,1,1 1,2,1 1,2,3 (default=1,1,1)")
+    g.add_argument('--island-topology', nargs='+', default=['single_ring'], choices=['single_ring', 'double_ring', 'star', 'all2lall', 'no_migration'])
+    g.add_argument('--migration-keep-original', type=bool, nargs='+', default=[False])
+    g.add_argument('--migration-selection', nargs='+', default=['best'], choices=['best', 'random'])
+    g.add_argument('--migration-replacement-selection', nargs='+', default=['worst'], choices=['best', 'random'])
 
     return p.parse_args()
 
@@ -191,6 +196,7 @@ def make_config(args: argparse.Namespace, body: str, params: dict, seed: int, fo
         output_folder=folder,
         # flat_pretraining=int(params['flat_pretraining'] * params["pop_size"]),
         # island_sizes=[float(s) for s in params["island_sizes"].split(',')],
+        max_evaluations=SimThreshold(max_sims=args.evaluations),
         **ea_params,
     )
 
