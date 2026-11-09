@@ -113,7 +113,7 @@ def parse_args() -> argparse.Namespace:
     g.add_argument('--island-topology', nargs='+', default=['single_ring'], choices=['single_ring', 'double_ring', 'star', 'all2lall', 'no_migration'])
     g.add_argument('--migration-keep-original', type=bool, nargs='+', default=[False])
     g.add_argument('--migration-selection', nargs='+', default=['best'], choices=['best', 'random'])
-    g.add_argument('--migration-replacement-selection', nargs='+', default=['worst'], choices=['best', 'random'])
+    g.add_argument('--migration-replacement-selection', nargs='+', default=['worst'], choices=['worst', 'random'])
 
     return p.parse_args()
 
