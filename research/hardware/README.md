@@ -57,3 +57,29 @@ python3 research/hardware/run_gecko.py
 1 s in neutral, 30 s of walking, back to neutral; Ctrl-C stops safely. Every step is logged to `~/gecko_logs/`. "late by" means the loop can't keep 10 Hz.
 It walks head first. `min_deg`/`max_deg` (10–170) limit the controller's ±90° to ±80°.
 Keep the servo readback on: in the simulation, `--no-readback` walks 0–1.5 m in 30 s.
+
+# Spider controller
+
+| file | content |
+|---|---|
+| `spider_54774.npz` | weights (10 KB): 11 inputs → 32 tanh → 32 tanh → 8 tanh × π/2, with the same 0.5 smoothing |
+| `spider_hardware.py` | servo mapping, IMU axes, Robohat wrapper |
+| `run_spider.py` | the same loop as `run_gecko.py`, for a network with any number of layers |
+
+Joint order: l1_1, l1_2, l2_1, l2_2, l3_1, l3_2, l4_1, l4_2 (`_1` is the hip, `_2` the knee of each leg). Pi setup as for the gecko.
+
+## Calibration
+
+The same steps, with `DEFAULT_SERVO_MAPPINGS` in `spider_hardware.py` and `python3 research/hardware/run_spider.py --sweep 30` / `--check-imu --duration 30`.
+
+- Seen from above, the legs go counterclockwise l1, l2, l4, l3 (l1 opposite l4, l2 opposite l3).
+- Signs: at a positive angle every hip (`_1`) swings its leg counterclockwise seen from above, and every knee (`_2`) lifts its leg.
+- IMU: robot flat gives `quat_imag` ≈ (0, 0, 0). Lifting the l1 side makes the first number positive; lowering the l3 side makes the second number positive.
+
+## Run
+
+```bash
+python3 research/hardware/run_spider.py
+```
+
+Logs go to `~/spider_logs/`. It walks diagonally, toward the gap between legs l1 and l2. Keep the servo readback on: in the simulation, `--no-readback` walks 0.6–2.1 m in 30 s.
