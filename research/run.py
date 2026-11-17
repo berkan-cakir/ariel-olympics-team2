@@ -32,7 +32,7 @@ from islands import SimThreshold
 HERE = Path(__file__).resolve().parent
 console = Console()
 
-MLP_CONTROLLERS = ("mlp", "mlp_clock")
+MLP_CONTROLLERS = ("mlp", "mlp_clock", "mlp_camera")
 GA_PARAMS = (
     "mutation_rate",
     "mutation_std",
