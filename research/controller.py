@@ -2,8 +2,9 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Literal
+from typing import Any, Literal
 
+import cv2
 import mujoco as mj
 import numpy as np
 import torch
@@ -20,7 +21,7 @@ ACTIVATIONS: dict[str, type[nn.Module]] = {"tanh": nn.Tanh, "elu": nn.ELU, "relu
 
 @dataclass(frozen=True)
 class BrainConfig:
-    name: Literal["na_cpg", "simple_cpg", "mlp", "mlp_clock"] = "na_cpg"
+    name: Literal["na_cpg", "simple_cpg", "mlp", "mlp_clock", "mlp_camera"] = "na_cpg"
     hidden: tuple[int, ...] = (16,)
     activation: Literal["tanh", "elu", "relu"] = "tanh"
 
@@ -139,9 +140,88 @@ class MLPClockBrain(MLPBrain):
     clock = True
 
 
+class MLPCameraBrain(MLPBrain):
+    # These values are somewhat arbitrary
+    lower_hsv = (175 // 2, 150, 150)
+    upper_hsv = (10 // 2, 255, 255)
+
+    cam_width = 240
+    cam_height = 240
+
+    renderer: mj.Renderer = None
+    camera: str = None
+
+    @classmethod
+    def network(cls, n_actuators: int, cfg: BrainConfig) -> nn.Sequential:
+        sizes = (3 + n_actuators + (2 if cls.clock else 0) + 3, *cfg.hidden, n_actuators)
+        layers: list[nn.Module] = []
+        for n_in, n_out in pairwise(sizes):
+            layers += [nn.Linear(n_in, n_out), ACTIVATIONS[cfg.activation]()]
+        layers[-1] = nn.Tanh()
+        return nn.Sequential(*layers).requires_grad_(False)
+
+    def get_ball_uv(self, model: mj.MjModel, data: mj.MjData) -> tuple[float, float, bool]:
+        """
+        Returns
+        -------
+        ball_u : float
+        ball_v : float
+        ball_found : bool
+        """
+        # TODO move camera finding into __init__
+        # all_cams = (model.camera(i).name for i in range(model.ncam))
+        # cam = next(cam_name for cam_name in all_cams if cam_name.endswith("mycamera"))
+
+        # renderer = mj.Renderer(model, height=self.cam_height, width=self.cam_width)
+        self.renderer.update_scene(data, camera=self.camera)
+
+        rgb = self.renderer.render()
+
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        mask = cv2.inRange(hsv, self.lower_hsv, self.upper_hsv)
+        moments = cv2.moments(mask)
+
+        if moments["m00"] > 0:
+            u = moments["m10"] / moments["m00"] / self.cam_width
+            v = moments["m01"] / moments["m00"] / self.cam_height
+            # ball_loc = np.array([u / rgb.shape[1], v / rgb.shape[0]])
+            return (u, v, True)
+        else:
+            # ball_loc = np.array([0.0, 0.0])
+            return (0.0, 0.0, False)
+
+        # # with mj.Renderer(model, height=self.cam_height, width=self.cam_width) as renderer:
+        #     renderer.update_scene(data, camera=cam)
+        #     rgb = renderer.render()
+
+        #     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        #     mask = cv2.inRange(hsv, self.lower_hsv, self.upper_hsv)
+        #     moments = cv2.moments(mask)
+
+        #     if moments["m00"] > 0:
+        #         u = moments["m10"] / moments["m00"] / self.cam_width
+        #         v = moments["m01"] / moments["m00"] / self.cam_height
+        #         # ball_loc = np.array([u / rgb.shape[1], v / rgb.shape[0]])
+        #         return (u, v, True)
+        #     else:
+        #         # ball_loc = np.array([0.0, 0.0])
+        #         return (0.0, 0.0, False)
+
+    def __call__(self, model: mj.MjModel, data: mj.MjData) -> np.ndarray[tuple[Any, ...], np.dtype[Any]]:
+        state = get_state_from_data(data)
+
+        ball_uv = self.get_ball_uv(model, data)
+        state = np.append(state, ball_uv)
+
+        if self.clock:
+            state = np.append(state, [np.sin(self.omega * data.time), np.cos(self.omega * data.time)])
+        return self.net(torch.as_tensor(state, dtype=torch.float32)).numpy() * np.pi / 2
+
+
 CONTROLLERS: dict[str, type[Brain]] = {
     "na_cpg": NaCPGBrain,
     "simple_cpg": SimpleCPGBrain,
     "mlp": MLPBrain,
     "mlp_clock": MLPClockBrain,
+    "mlp_camera": MLPCameraBrain,
 }

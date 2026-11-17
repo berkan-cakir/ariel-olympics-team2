@@ -92,7 +92,7 @@ def parse_args() -> argparse.Namespace:
                    help="fast: 1 seed per trial, then best params on all seeds; robust: all seeds per trial")
 
     g = p.add_argument_group("search space")
-    g.add_argument("--controllers", nargs="+", default=["na_cpg"], choices=["na_cpg", "simple_cpg", "mlp", "mlp_clock"])
+    g.add_argument("--controllers", nargs="+", default=["na_cpg"], choices=["na_cpg", "simple_cpg", "mlp", "mlp_clock", "mlp_camera"])
     g.add_argument("--mlp-hidden", nargs="+", default=["16"],
                    help="MLP hidden layer sizes, comma-separated per architecture, e.g. 0 16 32,32 (0 = linear)")
     g.add_argument("--mlp-activation", nargs="+", default=["tanh"], choices=["tanh", "elu", "relu"])
@@ -114,6 +114,7 @@ def parse_args() -> argparse.Namespace:
     g.add_argument('--migration-keep-original', type=bool, nargs='+', default=[False])
     g.add_argument('--migration-selection', nargs='+', default=['best'], choices=['best', 'random'])
     g.add_argument('--migration-replacement-selection', nargs='+', default=['worst'], choices=['worst', 'random'])
+    g.add_argument('--use-camera', type=bool, default=False)
 
     return p.parse_args()
 

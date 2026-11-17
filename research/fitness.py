@@ -27,7 +27,8 @@ from ariel.utils.noise_gen import PerlinNoise
 from ariel.utils.runners import thread_safe_runner
 from ariel.utils.tracker import Tracker
 
-from controller import CONTROLLERS, Brain, BrainConfig
+from controller import CONTROLLERS, Brain, BrainConfig, MLPCameraBrain
+from bodies.lab_spider import spider_with_blocks_diag
 
 GOAL = 3.0  # m, straight-line distance from the start in any direction
 TIME_LIMIT = 30.0  # s of control to cover GOAL
@@ -77,6 +78,7 @@ PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
     "spider_12": john_set.spider_12,
     "spider_16": john_set.spider_16,
     "turtle": john_set.turtle,
+    "spider_diag_blocks": spider_with_blocks_diag
 }
 
 
@@ -184,6 +186,20 @@ def grass() -> BaseWorld:
     return surface(SimpleFlatWorld(), GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
 
 
+def grass_with_ball() -> BaseWorld:
+    world = grass()
+
+    ball = world.spec.worldbody.add_body(name="ball", pos=[0.0, -4.0, .1])
+    ball.add_geom(
+        name="target_ball",
+        type=mj.mjtGeom.mjGEOM_SPHERE,
+        size=[.05, 0, 0],
+        rgba=[1, 1, 0, 1]
+    )
+
+    return world
+
+
 def pyramid(side: float, height: float, angle: float) -> np.ndarray:
     reach = int(np.ceil(side / np.sqrt(3) / BUMP_CELL))
     offsets = np.arange(-reach, reach + 1) * BUMP_CELL
@@ -249,6 +265,7 @@ WORLDS: dict[int, Callable[[], BaseWorld]] = {
     8: silicone_bumps,
     9: grass_slope,
     10: track,
+    11: grass_with_ball,
 }
 
 
@@ -298,7 +315,18 @@ def simulate(brain: Brain, body: CoreModule, env_id: int) -> np.ndarray | None:
     tracker = Tracker(mj.mjtObj.mjOBJ_GEOM, "core", ["xpos"])
     tracker.setup(world.spec, data)
     controller = Controller(brain, time_steps_per_ctrl_step=CONTROL_STEPS, time_steps_per_save=1, tracker=tracker)
-    thread_safe_runner(model, data, controller, duration=TIME_LIMIT)
+
+    if isinstance(brain, MLPCameraBrain):
+        all_cams = (model.camera(i).name for i in range(model.ncam))
+        robot_cam = next(cam_name for cam_name in all_cams if cam_name.endswith("mycamera"))
+
+        with mj.Renderer(model, height=brain.cam_height, width=brain.cam_width) as renderer:
+            brain.renderer = renderer
+            brain.camera = robot_cam
+            thread_safe_runner(model, data, controller, duration=TIME_LIMIT)
+    else:
+        thread_safe_runner(model, data, controller, duration=TIME_LIMIT)
+
     # MuJoCo resets a simulation that blows up, which teleports the robot back to its spawn
     if any(data.warning[warning].number for warning in UNSTABLE):
         return None

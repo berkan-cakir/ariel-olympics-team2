@@ -55,7 +55,7 @@ class EvolutionConfig(EASettings):
     workers: int = 1
     fitness: FitnessConfig = Field(default_factory=FitnessConfig)
     flat_pretraining: int = 0
-    island_topology: Literal["single_ring", "double_ring", "all2all", "star", "no_migration"]
+    island_topology: Literal["single_ring", "double_ring", "all2all", "star", "no_migration"] = Field(default="single_ring")
     max_evaluations: SimThreshold = Field(default_factory=SimThreshold)
     migration_keep_original: bool = False
     migration_selection: str = 'best'

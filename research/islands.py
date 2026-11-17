@@ -378,10 +378,10 @@ class NoMigration(MigrationPattern):
         return
         yield  # Incredibly hacky way to tell Python this is a generator so typechecking stops complaining
 
-    def emigrate(self, population: Population, island: int, current_generation: int, **kwargs) -> Population:
+    def emigrate(self, population: Population, island: int = None, current_generation: int = None, **kwargs) -> Population:
         return population
 
-    def immigrate(self, population: Population, current_generation: int, island: int, **kwargs) -> Population:
+    def immigrate(self, population: Population, current_generation: int = None, island: int = None, **kwargs) -> Population:
         return population
 
 class SingleRingMigration(MigrationPattern):
