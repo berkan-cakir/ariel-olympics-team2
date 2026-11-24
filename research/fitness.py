@@ -29,6 +29,7 @@ from ariel.utils.tracker import Tracker
 
 from controller import CONTROLLERS, Brain, BrainConfig, MLPCameraBrain
 from bodies.lab_spider import spider_with_blocks_diag
+from bodies.champion import champion
 
 GOAL = 3.0  # m, straight-line distance from the start in any direction
 TIME_LIMIT = 30.0  # s of control to cover GOAL
@@ -78,7 +79,8 @@ PREBUILT_BODIES: dict[str, Callable[[], CoreModule]] = {
     "spider_12": john_set.spider_12,
     "spider_16": john_set.spider_16,
     "turtle": john_set.turtle,
-    "spider_diag_blocks": spider_with_blocks_diag
+    "spider_diag_blocks": spider_with_blocks_diag,
+    "champion": champion,
 }
 
 
