@@ -1,0 +1,51 @@
+{
+  "quiet": false,
+  "is_maximisation": true,
+  "first_generation_id": 0,
+  "num_steps": 50,
+  "target_population_size": 30,
+  "output_folder": "/home/marten/uni/MSc_CLS/EvoComp/ariel-olympics-team2/research/runs/spider_diag_blocks/trials/trial_000/seed_0",
+  "db_file_name": "database.db",
+  "db_handling": "delete",
+  "body": "spider_diag_blocks",
+  "controller": {
+    "name": "mlp_camera",
+    "hidden": [
+      16
+    ],
+    "activation": "tanh"
+  },
+  "algorithm": "ga",
+  "mutation_rate": 0.1,
+  "mutation_std": 0.1,
+  "crossover_rate": 0.5,
+  "crossover_kind": "uniform",
+  "revde_scaling_factor": 0.5,
+  "parent_tournament_size": 3,
+  "survivor_tournament_size": 3,
+  "islands": false,
+  "migration_interval": 10,
+  "migration_size": 2,
+  "island_sizes": [],
+  "island_kwargs": [],
+  "seed": 0,
+  "workers": 1,
+  "fitness": {
+    "environments": [
+      0
+    ],
+    "weights": null,
+    "aggregate": "mean",
+    "lateral_penalty": 0.0
+  },
+  "flat_pretraining": 0,
+  "island_topology": "single_ring",
+  "max_evaluations": {
+    "max_sims": null,
+    "total_sims": 0
+  },
+  "migration_keep_original": false,
+  "migration_selection": "best",
+  "migration_replacement_selection": "worst",
+  "db_file_path": "/home/marten/uni/MSc_CLS/EvoComp/ariel-olympics-team2/research/runs/spider_diag_blocks/trials/trial_000/seed_0/database.db"
+}
