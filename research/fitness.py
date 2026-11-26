@@ -39,6 +39,23 @@ TERRAIN_DIMS = (100, 100)
 RUGGED_HEIGHT = 0.1  # m between the lowest and highest point of the rugged terrain (ARIEL's default is 0.5)
 LINOLEUM_FRICTION = 0.3  # sliding friction of the slippery floor; every other surface keeps MuJoCo's default of 1
 CARPET_FRICTION = 1.5
+GRASS_SLIDE_DEGREES = 6.0
+SCREEN_GLASS_FRICTION = 0.03 # TODO better measurements!!!!
+PRINTED_PLASTIC_FRICTION = 0.35
+SILICONE_RUBBER_FRICTION = 1.0
+GRASS_FRICTION = float(np.tan(np.radians(GRASS_SLIDE_DEGREES)) * np.sqrt(PRINTED_PLASTIC_FRICTION / SCREEN_GLASS_FRICTION))
+SILICONE_FRICTION = float(np.sqrt(PRINTED_PLASTIC_FRICTION * SILICONE_RUBBER_FRICTION))
+BUMP_TYPES = ((0.02, 0.005), (0.025, 0.007), (0.03, 0.009))
+BUMP_ROW = 0.04
+BUMP_GAP = 0.006
+BUMP_CELL = 0.004
+BUMP_FLOOR = 7.0
+TRACK_LENGTH = 1.0
+TRACK_WIDTH = 1.5
+MAT_THICKNESS = 0.003
+MAT_GRASS_GAP = 0.004
+GRASS_THICKNESS = 0.001
+TRACK_HEADING_DEGREES = -90.0
 SLOPE_DEGREES = 10.0  # incline of the carpet funnel around the start
 RAY_SPACING = 0.05  # m between the rays that find the ground under a robot before it spawns
 UNSTABLE = (mj.mjtWarning.mjWARN_BADQPOS, mj.mjtWarning.mjWARN_BADQVEL, mj.mjtWarning.mjWARN_BADQACC)
@@ -163,6 +180,63 @@ def carpet_slope() -> BaseWorld:
     return surface(terrain("carpet-slope-world", 2 * rise, funnel), CARPET_FRICTION, (0.45, 0.12, 0.14, 1.0))
 
 
+def grass() -> BaseWorld:
+    return surface(SimpleFlatWorld(), GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
+
+
+def pyramid(side: float, height: float, angle: float) -> np.ndarray:
+    reach = int(np.ceil(side / np.sqrt(3) / BUMP_CELL))
+    offsets = np.arange(-reach, reach + 1) * BUMP_CELL
+    normals = angle + 2 * np.pi * np.arange(3) / 3
+    distance = np.max(offsets[None, :, None] * np.cos(normals) + offsets[:, None, None] * np.sin(normals), axis=2)
+    return height * np.clip(1 - 2 * np.sqrt(3) * distance / side, 0, None)
+
+
+@cache
+def bumps() -> np.ndarray:
+    rng = np.random.default_rng(TERRAIN_SEED)
+    n = round(BUMP_FLOOR / BUMP_CELL) + 1
+    heightmap = np.zeros((n, n))
+    for y in range(round(BUMP_ROW / 2 / BUMP_CELL), n, round(BUMP_ROW / BUMP_CELL)):
+        x = -rng.uniform(0, BUMP_ROW)
+        while x < BUMP_FLOOR:
+            side, height = BUMP_TYPES[rng.integers(len(BUMP_TYPES))]
+            bump = pyramid(side, height, rng.uniform(0, 2 * np.pi))
+            r, c = len(bump) // 2, round((x + side / 2) / BUMP_CELL)
+            if r <= c < n - r and y < n - r:
+                rows, cols = slice(y - r, y + r + 1), slice(c - r, c + r + 1)
+                heightmap[rows, cols] = np.maximum(heightmap[rows, cols], bump)
+            x += side + BUMP_GAP
+    return heightmap
+
+
+def silicone_bumps() -> BaseWorld:
+    heightmap = bumps()
+    world = CompoundWorld(name="silicone-bumps-world", floor_size=(BUMP_FLOOR, BUMP_FLOOR, 2 * heightmap.max()), floor_heightmap=heightmap, checker_floor=False)
+    return surface(world, SILICONE_FRICTION, (0.15, 0.15, 0.16, 1.0))
+
+
+def grass_slope() -> BaseWorld:
+    return surface(carpet_slope(), GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
+
+
+def slab(world: BaseWorld, name: str, heightmap: np.ndarray, size: list[float], along: float, height: float, friction: float, rgba: tuple[float, float, float, float]) -> None:
+    heading = np.radians(TRACK_HEADING_DEGREES)
+    world.spec.add_hfield(name=name, size=size, nrow=heightmap.shape[0], ncol=heightmap.shape[1], userdata=heightmap.flatten().tolist())
+    geom = world.spec.worldbody.add_geom(name=name, type=mj.mjtGeom.mjGEOM_HFIELD, hfieldname=name, pos=[along * np.cos(heading), along * np.sin(heading), height], quat=[np.cos(heading / 2), 0, 0, np.sin(heading / 2)], priority=1, rgba=rgba)
+    geom.friction = [friction, *geom.friction[1:]]
+
+
+def track() -> BaseWorld:
+    world = surface(SimpleFlatWorld(), LINOLEUM_FRICTION, (0.78, 0.74, 0.62, 1.0))
+    mat = bumps()[: round(TRACK_LENGTH / BUMP_CELL) + 1, : round(TRACK_WIDTH / BUMP_CELL) + 1].T
+    slab(world, "mat", mat, [TRACK_LENGTH / 2, TRACK_WIDTH / 2, mat.max(), MAT_THICKNESS], TRACK_LENGTH / 2, MAT_THICKNESS, SILICONE_FRICTION, (0.15, 0.15, 0.16, 1.0))
+    rise = TRACK_LENGTH * np.tan(np.radians(SLOPE_DEGREES))
+    ramp = np.array([[0.0, 0.0, 1.0, 1.0]] * 2)
+    slab(world, "grass", ramp, [1.5 * TRACK_LENGTH, TRACK_WIDTH / 2, rise, GRASS_THICKNESS], 2.5 * TRACK_LENGTH + MAT_GRASS_GAP, GRASS_THICKNESS, GRASS_FRICTION, (0.30, 0.55, 0.20, 1.0))
+    return world
+
+
 WORLDS: dict[int, Callable[[], BaseWorld]] = {
     0: SimpleFlatWorld,
     1: rugged,
@@ -171,6 +245,10 @@ WORLDS: dict[int, Callable[[], BaseWorld]] = {
     4: linoleum,
     5: carpet,
     6: carpet_slope,
+    7: grass,
+    8: silicone_bumps,
+    9: grass_slope,
+    10: track,
 }
 
 
@@ -234,11 +312,25 @@ def race_end(distance: np.ndarray) -> int:
 
 
 def race_speed(path: np.ndarray) -> float:
+    return speed(xy_displacement(path[0], path.T))
+
+
+def track_speed(path: np.ndarray) -> float:
+    heading = np.radians(TRACK_HEADING_DEGREES)
+    along = path[:, :2] @ np.array([np.cos(heading), np.sin(heading)])
+    across = path[:, :2] @ np.array([-np.sin(heading), np.cos(heading)])
+    progress = np.maximum(along - along[0], 0)
+    fall = np.flatnonzero(np.abs(across) > TRACK_WIDTH / 2)
+    if fall.size:
+        progress[fall[0]:] = progress[fall[0]]
+    return speed(progress)
+
+
+def speed(distance: np.ndarray) -> float:
     # Average speed over the race: GOAL / finish time for a finisher, else furthest distance / race time.
     # Both are GOAL / race time at the finish line, so every finisher beats every non-finisher.
-    distance = xy_displacement(path[0], path.T)
     if distance.max() < GOAL:
-        return float(distance.max() / ((len(path) - 1) * TIMESTEP))
+        return float(distance.max() / ((len(distance) - 1) * TIMESTEP))
     step = race_end(distance)
     before, after = distance[step - 1], distance[step]
     return float(GOAL / ((step - 1 + (GOAL - before) / (after - before)) * TIMESTEP))
@@ -256,7 +348,9 @@ def lateral_drift(path: np.ndarray) -> float:
     return float(np.abs(xy[: end + 1] @ np.array([-heading[1], heading[0]])).mean())
 
 
-def score(path: np.ndarray, lateral_penalty: float) -> float:
+def score(path: np.ndarray, lateral_penalty: float, env_id: int = 0) -> float:
+    if WORLDS[env_id] is track:
+        return track_speed(path)
     # Floored at 0, the score of an unstable simulation, so drifting is never worse than blowing up
     return max(0.0, race_speed(path) - lateral_penalty * lateral_drift(path))
 
@@ -268,7 +362,7 @@ def fitness(genotype: np.ndarray, body: str, controller: BrainConfig, cfg: Fitne
         robot = load_body(body)
         brain = brain_type(genotype, len(robot.spec.actuators), CONTROL_STEPS * TIMESTEP, controller)
         path = simulate(brain, robot, env_id)
-        scores.append(0.0 if path is None else score(path, cfg.lateral_penalty))
+        scores.append(0.0 if path is None else score(path, cfg.lateral_penalty, env_id))
     return AGGREGATES[cfg.aggregate](scores, cfg.weights)
 
 
